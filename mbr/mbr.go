@@ -56,6 +56,9 @@ type MasterBootRecord struct {
 	Unknown                [2]byte
 	Partitions             [4]Partition
 	Signature              uint16
+
+	currentPartition *Partition
+	sectionReader    *io.SectionReader
 }
 
 type Partition struct {
@@ -66,17 +69,33 @@ type Partition struct {
 
 	StartSector uint32
 	Size        uint32
+	index       int
 
-	index int
+	off int64
+	io.ReadSeeker
 }
 
-func (m *MasterBootRecord) GetPartitions() []types.Partition {
-	var ps []types.Partition
-	for _, p := range m.Partitions {
-		var i types.Partition = p
-		ps = append(ps, i)
+func (m *MasterBootRecord) Next() (types.Partition, error) {
+	index := 0
+	if m.currentPartition != nil {
+		index = m.currentPartition.index + 1
 	}
-	return ps
+	if len(m.Partitions) <= index {
+		return nil, io.EOF
+	}
+
+	// initialize current partition readseeker  // TODO: use mutex
+	m.currentPartition.ReadSeeker = nil
+
+	m.currentPartition = &m.Partitions[index]
+	offset := int64(m.currentPartition.GetStartSector()) * 512
+	_, err := m.sectionReader.Seek(offset, 0)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to seek partition(%d): %w", m.currentPartition.Index(), err)
+	}
+	m.currentPartition.ReadSeeker = io.NewSectionReader(m.sectionReader, offset, int64(m.currentPartition.GetSize()*512))
+
+	return m.currentPartition, nil
 }
 
 func (p Partition) Index() int {
@@ -105,9 +124,9 @@ func (p Partition) GetSize() uint64 {
 	return uint64(p.Size)
 }
 
-func NewMasterBootRecord(reader io.Reader) (*MasterBootRecord, error) {
+func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 	buf := make([]byte, Sector)
-	size, err := reader.Read(buf)
+	size, err := sr.Read(buf)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to read mbr error: %w", err)
 	}
@@ -116,7 +135,7 @@ func NewMasterBootRecord(reader io.Reader) (*MasterBootRecord, error) {
 	}
 
 	r := bytes.NewReader(buf)
-	var mbr MasterBootRecord
+	mbr := MasterBootRecord{sectionReader: sr}
 
 	if err := binary.Read(r, binary.LittleEndian, &mbr.UniqueMBRDiskSignature); err != nil {
 		return nil, xerrors.Errorf("failed to parse unique MBR disk signature: %w", err)
