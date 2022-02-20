@@ -1,9 +1,11 @@
 package gpt
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 
@@ -12,19 +14,20 @@ import (
 )
 
 const (
-	Sector     = 0x200
-	Signature  = "EFI PART"
-	BootTypeID = "Hah!IdontNeedEFI"
+	Sector             = 0x200
+	Signature          = "EFI PART"
+	PartitionEntrySize = 128
+	BootTypeID         = "Hah!IdontNeedEFI"
 )
 
 const (
-	// Common
+	// UnUsed Common
 	UnUsed       = "00000000-0000-0000-0000-000000000000"
 	MBR          = "024DEE41-33E7-11D3-9D69-0008C781F39F"
 	EFI          = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
 	GrubBIOSBoot = "21686148-6449-6E6F-744E-656564454649"
 
-	// Linux
+	// Data Linux
 	Data               = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
 	RAID               = "A19D880F-05FC-4D3B-A006-743F0F84911E"
 	Swap               = "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F"
@@ -206,7 +209,7 @@ func NewGUIDPartitionTable(sr *io.SectionReader) (*GUIDPartitionTable, error) {
 		return nil, xerrors.Errorf("failed to binary read: %w", err)
 	}
 
-	if gpt.Header.SizeOfPartitionEntry != 128 {
+	if gpt.Header.SizeOfPartitionEntry != PartitionEntrySize {
 		return nil, xerrors.New("not support GPT format error, must be 128 byte")
 	}
 
@@ -218,24 +221,47 @@ func NewGUIDPartitionTable(sr *io.SectionReader) (*GUIDPartitionTable, error) {
 		return nil, xerrors.Errorf("invalid GPT signature: %s", gpt.Header.Signature)
 	}
 
+	n := math.Ceil(float64(gpt.Header.NumberOfPartitionEntries*gpt.Header.SizeOfPartitionEntry) / float64(Sector))
+	if math.IsNaN(n) || math.IsInf(n, 0) {
+		return nil, xerrors.Errorf("invalid partition entry length: %d", gpt.Header.NumberOfPartitionEntries)
+	}
+	buf := bytes.NewBuffer(nil)
+	for i := 0; i < int(n); i++ {
+		b := make([]byte, Sector)
+		n, err := sr.Read(b)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read entry: %w", err)
+		}
+		if n != Sector {
+			return nil, xerrors.Errorf("invalid read size required: %d, actual: %d", Sector, n)
+		}
+		n, err = buf.Write(b)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to write buffer: %w", err)
+		}
+		if n != Sector {
+			return nil, xerrors.Errorf("invalid write size required: %d, actual: %d", Sector, n)
+		}
+	}
+
 	for i := 0; i < int(gpt.Header.NumberOfPartitionEntries); i++ {
 		var partitionEntry PartitionEntry
-		if err := binary.Read(sr, binary.LittleEndian, &partitionEntry.PartitionTypeGUID); err != nil {
+		if err := binary.Read(buf, binary.LittleEndian, &partitionEntry.PartitionTypeGUID); err != nil {
 			return nil, xerrors.Errorf("failed to parse GPT partition entry[%d] PartitionTypeGUID: %w", i, err)
 		}
-		if err := binary.Read(sr, binary.LittleEndian, &partitionEntry.UniquePartitionGUID); err != nil {
+		if err := binary.Read(buf, binary.LittleEndian, &partitionEntry.UniquePartitionGUID); err != nil {
 			return nil, xerrors.Errorf("failed to parse GPT partition entry[%d] UniquePartitionGUID: %w", i, err)
 		}
-		if err := binary.Read(sr, binary.LittleEndian, &partitionEntry.StartingLBA); err != nil {
+		if err := binary.Read(buf, binary.LittleEndian, &partitionEntry.StartingLBA); err != nil {
 			return nil, xerrors.Errorf("failed to parse GPT partition entry[%d] StartingLBA: %w", i, err)
 		}
-		if err := binary.Read(sr, binary.LittleEndian, &partitionEntry.EndingLBA); err != nil {
+		if err := binary.Read(buf, binary.LittleEndian, &partitionEntry.EndingLBA); err != nil {
 			return nil, xerrors.Errorf("failed to parse GPT partition entry[%d] EndingLBA: %w", i, err)
 		}
-		if err := binary.Read(sr, binary.LittleEndian, &partitionEntry.Attributes); err != nil {
+		if err := binary.Read(buf, binary.LittleEndian, &partitionEntry.Attributes); err != nil {
 			return nil, xerrors.Errorf("failed to parse GPT partition entry[%d] Attributes: %w", i, err)
 		}
-		if err := binary.Read(sr, binary.LittleEndian, &partitionEntry.PartitionName); err != nil {
+		if err := binary.Read(buf, binary.LittleEndian, &partitionEntry.PartitionName); err != nil {
 			return nil, xerrors.Errorf("failed to parse GPT partition entry[%d] PartitionName: %w", i, err)
 		}
 		partitionEntry.index = i
