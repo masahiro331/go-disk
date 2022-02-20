@@ -82,7 +82,7 @@ func (gpt *GUIDPartitionTable) Next() (types.Partition, error) {
 		index = gpt.currentEntry.index + 1
 
 		// initialize current partition readseeker  // TODO: use mutex
-		gpt.currentEntry.ReadSeeker = nil
+		gpt.currentEntry.sectionReader = nil
 	}
 	if len(gpt.Entries) <= index {
 		return nil, io.EOF
@@ -94,7 +94,7 @@ func (gpt *GUIDPartitionTable) Next() (types.Partition, error) {
 	if err != nil {
 		return nil, xerrors.Errorf("failed to seek entry(%d): %w", gpt.currentEntry.Index(), err)
 	}
-	gpt.currentEntry.ReadSeeker = io.NewSectionReader(gpt.sectionReader, offset, int64(gpt.currentEntry.GetSize()*512))
+	gpt.currentEntry.sectionReader = io.NewSectionReader(gpt.sectionReader, offset, int64(gpt.currentEntry.GetSize()*512))
 
 	return gpt.currentEntry, nil
 }
@@ -147,6 +147,10 @@ func (pe PartitionEntry) Bootable() bool {
 		guid == GrubBIOSBoot
 }
 
+func (pe PartitionEntry) GetSectionReader() io.SectionReader {
+	return *pe.sectionReader
+}
+
 type Header struct {
 	Signature                [8]byte
 	Revision                 [4]byte
@@ -175,8 +179,8 @@ type PartitionEntry struct {
 
 	index int
 
-	off int64
-	io.ReadSeeker
+	off           int64
+	sectionReader *io.SectionReader
 }
 
 type GUID [16]byte

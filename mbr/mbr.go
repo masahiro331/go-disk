@@ -71,8 +71,8 @@ type Partition struct {
 	Size        uint32
 	index       int
 
-	off int64
-	io.ReadSeeker
+	off           int64
+	sectionReader *io.SectionReader
 }
 
 func (m *MasterBootRecord) Next() (types.Partition, error) {
@@ -85,7 +85,7 @@ func (m *MasterBootRecord) Next() (types.Partition, error) {
 	}
 
 	// initialize current partition readseeker  // TODO: use mutex
-	m.currentPartition.ReadSeeker = nil
+	m.currentPartition.sectionReader = nil
 
 	m.currentPartition = &m.Partitions[index]
 	offset := int64(m.currentPartition.GetStartSector()) * 512
@@ -93,7 +93,7 @@ func (m *MasterBootRecord) Next() (types.Partition, error) {
 	if err != nil {
 		return nil, xerrors.Errorf("failed to seek partition(%d): %w", m.currentPartition.Index(), err)
 	}
-	m.currentPartition.ReadSeeker = io.NewSectionReader(m.sectionReader, offset, int64(m.currentPartition.GetSize()*512))
+	m.currentPartition.sectionReader = io.NewSectionReader(m.sectionReader, offset, int64(m.currentPartition.GetSize()*512))
 
 	return m.currentPartition, nil
 }
@@ -122,6 +122,10 @@ func (p Partition) Bootable() bool {
 
 func (p Partition) GetSize() uint64 {
 	return uint64(p.Size)
+}
+
+func (p Partition) GetSectionReader() io.SectionReader {
+	return *p.sectionReader
 }
 
 func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
