@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"math"
 	"strconv"
 	"strings"
 
@@ -225,9 +224,9 @@ func NewGUIDPartitionTable(sr *io.SectionReader) (*GUIDPartitionTable, error) {
 		return nil, xerrors.Errorf("invalid GPT signature: %s", gpt.Header.Signature)
 	}
 
-	n := math.Ceil(float64(gpt.Header.NumberOfPartitionEntries*gpt.Header.SizeOfPartitionEntry) / float64(Sector))
-	if math.IsNaN(n) || math.IsInf(n, 0) {
-		return nil, xerrors.Errorf("invalid partition entry length: %d", gpt.Header.NumberOfPartitionEntries)
+	n := gpt.Header.NumberOfPartitionEntries * gpt.Header.SizeOfPartitionEntry / Sector
+	if gpt.Header.NumberOfPartitionEntries*gpt.Header.SizeOfPartitionEntry%Sector != 0 {
+		n += 1
 	}
 	buf := bytes.NewBuffer(nil)
 	for i := 0; i < int(n); i++ {
