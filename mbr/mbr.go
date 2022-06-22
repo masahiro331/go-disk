@@ -78,14 +78,12 @@ type Partition struct {
 func (m *MasterBootRecord) Next() (types.Partition, error) {
 	index := 0
 	if m.currentPartition != nil {
+		m.currentPartition.sectionReader = nil
 		index = m.currentPartition.index + 1
 	}
 	if len(m.Partitions) <= index {
 		return nil, io.EOF
 	}
-
-	// initialize current partition readseeker  // TODO: use mutex
-	m.currentPartition.sectionReader = nil
 
 	m.currentPartition = &m.Partitions[index]
 	offset := int64(m.currentPartition.GetStartSector()) * 512

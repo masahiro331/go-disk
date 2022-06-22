@@ -78,10 +78,9 @@ type GUIDPartitionTable struct {
 func (gpt *GUIDPartitionTable) Next() (types.Partition, error) {
 	index := 0
 	if gpt.currentEntry != nil {
-		index = gpt.currentEntry.index + 1
-
 		// initialize current partition readseeker  // TODO: use mutex
 		gpt.currentEntry.sectionReader = nil
+		index = gpt.currentEntry.index + 1
 	}
 	if len(gpt.Entries) <= index {
 		return nil, io.EOF
