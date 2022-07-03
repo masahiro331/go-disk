@@ -61,11 +61,13 @@ type MasterBootRecord struct {
 	sectionReader    *io.SectionReader
 }
 
+type CHS [3]byte
+
 type Partition struct {
 	Boot     bool
-	StartCHS [3]byte
+	StartCHS CHS
 	Type     byte
-	EndCHS   [3]byte
+	EndCHS   CHS
 
 	StartSector uint32
 	Size        uint32
@@ -180,6 +182,23 @@ func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 		return nil, InvalidSignature
 	}
 
+	for i := 0; i < len(mbr.Partitions); i++ {
+		if mbr.Partitions[i].Type != 0x05 && mbr.Partitions[i].Type != 0x0f {
+			continue
+		}
+		_, err := sr.Seek(int64(mbr.Partitions[i].StartSector)<<9, 0)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to seek to extended boot record: %w", err)
+		}
+		_, err = NewMasterBootRecord(sr)
+		if xerrors.Is(InvalidSignature, err) {
+			mbr.Partitions[i].StartSector = mbr.Partitions[i].StartSector + 2
+			mbr.Partitions[i].Size = mbr.Partitions[i].Size - 2
+		} else {
+			// TODO: Support Extended Master Boot Record
+			return nil, xerrors.New("unsupported extended master boot record")
+		}
+	}
 	return &mbr, nil
 }
 
