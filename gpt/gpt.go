@@ -212,15 +212,15 @@ func NewGUIDPartitionTable(sr *io.SectionReader) (*GUIDPartitionTable, error) {
 	}
 
 	if gpt.Header.SizeOfPartitionEntry != PartitionEntrySize {
-		return nil, xerrors.New("not support GPT format error, must be 128 byte")
+		return nil, xerrors.Errorf("not support GPT format error: actual(%d byte), expected(%d byte)", gpt.Header.SizeOfPartitionEntry, PartitionEntrySize)
 	}
 
 	if Sector-len(gpt.Header.ReservedPadding) != int(gpt.Header.HeaderSize) {
-		return nil, xerrors.New("invalid header size error")
+		return nil, xerrors.Errorf("invalid header size error: actual(%d), expected(%d)", Sector-len(gpt.Header.ReservedPadding), gpt.Header.HeaderSize)
 	}
 
 	if string(gpt.Header.Signature[:]) != Signature {
-		return nil, xerrors.Errorf("invalid GPT signature: %s", gpt.Header.Signature)
+		return nil, xerrors.Errorf("invalid GPT signature: actual(%s), expected(%s)", string(gpt.Header.Signature[:]), Signature)
 	}
 
 	n := gpt.Header.NumberOfPartitionEntries * gpt.Header.SizeOfPartitionEntry / Sector
@@ -232,17 +232,17 @@ func NewGUIDPartitionTable(sr *io.SectionReader) (*GUIDPartitionTable, error) {
 		b := make([]byte, Sector)
 		n, err := sr.Read(b)
 		if err != nil {
-			return nil, xerrors.Errorf("failed to read entry: %w", err)
+			return nil, xerrors.Errorf("failed to read entries[%d]: %w", i, err)
 		}
 		if n != Sector {
-			return nil, xerrors.Errorf("invalid read size required: %d, actual: %d", Sector, n)
+			return nil, xerrors.Errorf("invalid read size: actual(%d), expected(%d)", n, Sector)
 		}
 		n, err = buf.Write(b)
 		if err != nil {
 			return nil, xerrors.Errorf("failed to write buffer: %w", err)
 		}
 		if n != Sector {
-			return nil, xerrors.Errorf("invalid write size required: %d, actual: %d", Sector, n)
+			return nil, xerrors.Errorf("invalid write size: actual(%d), expected(%d)", n, Sector)
 		}
 	}
 

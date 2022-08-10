@@ -135,7 +135,7 @@ func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 		return nil, xerrors.Errorf("failed to read mbr error: %w", err)
 	}
 	if size != Sector {
-		return nil, xerrors.New("binary size error")
+		return nil, xerrors.Errorf("binary size error: actual(%d), expected(%d)", Sector, size)
 	}
 
 	r := bytes.NewReader(buf)
