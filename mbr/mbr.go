@@ -48,6 +48,7 @@ Master Boot Record always 512 bytes.
 
 ref: https://www.ijais.org/research/volume10/number8/sadi-2016-ijais-451541.pdf
 */
+
 var InvalidSignature = xerrors.New("Invalid master boot record signature")
 
 type MasterBootRecord struct {

@@ -35,12 +35,12 @@ func main() {
 			}
 			log.Fatal(p.Name(), err)
 		}
-		log.Println(p.GetSize())
 		f, err = os.Create(fmt.Sprintf("%s%d", p.Name(), count))
 		if err != nil {
 			log.Fatal(err)
 		}
-		io.Copy(f, p)
+		r := p.GetSectionReader()
+		io.Copy(f, &r)
 		count++
 	}
 }
