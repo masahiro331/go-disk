@@ -10,5 +10,5 @@ type Partition interface {
 	GetSize() uint64
 
 	IsSupported() bool
-	GetSectionReader() io.SectionReader
+	io.ReaderAt
 }

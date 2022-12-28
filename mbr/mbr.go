@@ -59,7 +59,7 @@ type MasterBootRecord struct {
 	Signature              uint16
 
 	currentPartition *Partition
-	sectionReader    *io.SectionReader
+	reader           io.ReaderAt
 }
 
 type CHS [3]byte
@@ -74,14 +74,15 @@ type Partition struct {
 	Size        uint32
 	index       int
 
-	off           int64
-	sectionReader *io.SectionReader
+	off int64
+
+	reader io.ReaderAt
 }
 
 func (m *MasterBootRecord) Next() (types.Partition, error) {
 	index := 0
 	if m.currentPartition != nil {
-		m.currentPartition.sectionReader = nil
+		m.currentPartition.reader = nil
 		index = m.currentPartition.index + 1
 	}
 	if len(m.Partitions) <= index {
@@ -89,14 +90,14 @@ func (m *MasterBootRecord) Next() (types.Partition, error) {
 	}
 
 	m.currentPartition = &m.Partitions[index]
-	offset := int64(m.currentPartition.GetStartSector()) * 512
-	_, err := m.sectionReader.Seek(offset, 0)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to seek partition(%d): %w", m.currentPartition.Index(), err)
-	}
-	m.currentPartition.sectionReader = io.NewSectionReader(m.sectionReader, offset, int64(m.currentPartition.GetSize()*512))
+	m.currentPartition.reader = m.reader
 
 	return m.currentPartition, nil
+}
+
+func (p Partition) ReadAt(b []byte, off int64) (n int, err error) {
+	offset := int64(p.GetStartSector()) * 512
+	return p.reader.ReadAt(b, offset+off)
 }
 
 func (p Partition) Index() int {
@@ -125,13 +126,9 @@ func (p Partition) GetSize() uint64 {
 	return uint64(p.Size)
 }
 
-func (p Partition) GetSectionReader() io.SectionReader {
-	return *p.sectionReader
-}
-
-func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
+func NewMasterBootRecord(reader io.ReaderAt) (*MasterBootRecord, error) {
 	buf := make([]byte, Sector)
-	size, err := sr.Read(buf)
+	size, err := reader.ReadAt(buf, 0)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to read mbr error: %w", err)
 	}
@@ -139,9 +136,9 @@ func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 		return nil, xerrors.Errorf("binary size error: actual(%d), expected(%d)", Sector, size)
 	}
 
-	r := bytes.NewReader(buf)
-	mbr := MasterBootRecord{sectionReader: sr}
+	mbr := MasterBootRecord{reader: reader}
 
+	r := bytes.NewReader(buf)
 	if err := binary.Read(r, binary.LittleEndian, &mbr.UniqueMBRDiskSignature); err != nil {
 		return nil, xerrors.Errorf("failed to parse unique MBR disk signature: %w", err)
 	}
@@ -187,18 +184,18 @@ func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 		if mbr.Partitions[i].Type != 0x05 && mbr.Partitions[i].Type != 0x0f {
 			continue
 		}
-		_, err := sr.Seek(int64(mbr.Partitions[i].StartSector)<<9, 0)
-		if err != nil {
-			return nil, xerrors.Errorf("failed to seek to extended boot record: %w", err)
-		}
-		_, err = NewMasterBootRecord(sr)
-		if xerrors.Is(InvalidSignature, err) {
-			mbr.Partitions[i].StartSector = mbr.Partitions[i].StartSector + 2
-			mbr.Partitions[i].Size = mbr.Partitions[i].Size - 2
-		} else {
-			// TODO: Support Extended Master Boot Record
-			return nil, xerrors.New("unsupported extended master boot record")
-		}
+		// _, err := sr.Seek(int64(mbr.Partitions[i].StartSector)<<9, 0)
+		// if err != nil {
+		// 	return nil, xerrors.Errorf("failed to seek to extended boot record: %w", err)
+		// }
+		// _, err = NewMasterBootRecord(sr)
+		// if xerrors.Is(InvalidSignature, err) {
+		// 	mbr.Partitions[i].StartSector = mbr.Partitions[i].StartSector + 2
+		// 	mbr.Partitions[i].Size = mbr.Partitions[i].Size - 2
+		// } else {
+		// 	// TODO: Support Extended Master Boot Record
+		// 	return nil, xerrors.New("unsupported extended master boot record")
+		// }
 	}
 	return &mbr, nil
 }
