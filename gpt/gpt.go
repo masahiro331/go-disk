@@ -94,7 +94,7 @@ func (gpt *GUIDPartitionTable) Next() (types.Partition, error) {
 
 func (pe PartitionEntry) ReadAt(p []byte, off int64) (n int, err error) {
 	offset := int64(pe.GetStartSector()) * 512
-	return pe.ReadAt(p, offset+off)
+	return pe.reader.ReadAt(p, offset+off)
 }
 
 func (pe PartitionEntry) Name() string {
@@ -232,7 +232,7 @@ func NewGUIDPartitionTable(reader io.ReaderAt) (*GUIDPartitionTable, error) {
 	buffer := bytes.NewBuffer(nil)
 	for i := 0; i < int(n); i++ {
 		b := make([]byte, Sector)
-		n, err := reader.ReadAt(b, int64(i+1)*Sector)
+		n, err := reader.ReadAt(b, int64(i+2)*Sector)
 		if err != nil {
 			return nil, xerrors.Errorf("failed to read entries[%d]: %w", i, err)
 		}
