@@ -71,15 +71,15 @@ type GUIDPartitionTable struct {
 	Header  Header
 	Entries []PartitionEntry
 
-	currentEntry  *PartitionEntry
-	sectionReader *io.SectionReader
+	currentEntry *PartitionEntry
+	reader       io.ReaderAt
 }
 
 func (gpt *GUIDPartitionTable) Next() (types.Partition, error) {
 	index := 0
 	if gpt.currentEntry != nil {
 		// initialize current partition readseeker  // TODO: use mutex
-		gpt.currentEntry.sectionReader = nil
+		gpt.currentEntry.reader = nil
 		index = gpt.currentEntry.index + 1
 	}
 	if len(gpt.Entries) <= index {
@@ -87,14 +87,14 @@ func (gpt *GUIDPartitionTable) Next() (types.Partition, error) {
 	}
 
 	gpt.currentEntry = &gpt.Entries[index]
-	offset := int64(gpt.currentEntry.GetStartSector()) * 512
-	_, err := gpt.sectionReader.Seek(offset, 0)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to seek entry(%d): %w", gpt.currentEntry.Index(), err)
-	}
-	gpt.currentEntry.sectionReader = io.NewSectionReader(gpt.sectionReader, offset, int64(gpt.currentEntry.GetSize()*512))
+	gpt.currentEntry.reader = gpt.reader
 
 	return gpt.currentEntry, nil
+}
+
+func (pe PartitionEntry) ReadAt(p []byte, off int64) (n int, err error) {
+	offset := int64(pe.GetStartSector()) * 512
+	return pe.reader.ReadAt(p, offset+off)
 }
 
 func (pe PartitionEntry) Name() string {
@@ -145,10 +145,6 @@ func (pe PartitionEntry) Bootable() bool {
 		guid == GrubBIOSBoot
 }
 
-func (pe PartitionEntry) GetSectionReader() io.SectionReader {
-	return *pe.sectionReader
-}
-
 type Header struct {
 	Signature                [8]byte
 	Revision                 [4]byte
@@ -177,8 +173,8 @@ type PartitionEntry struct {
 
 	index int
 
-	off           int64
-	sectionReader *io.SectionReader
+	off    int64
+	reader io.ReaderAt
 }
 
 type GUID [16]byte
@@ -205,9 +201,14 @@ func (g *PartitionEntry) isUsed() bool {
 	return false
 }
 
-func NewGUIDPartitionTable(sr *io.SectionReader) (*GUIDPartitionTable, error) {
-	gpt := GUIDPartitionTable{sectionReader: sr}
-	if err := binary.Read(sr, binary.LittleEndian, &gpt.Header); err != nil {
+func NewGUIDPartitionTable(reader io.ReaderAt) (*GUIDPartitionTable, error) {
+	gpt := GUIDPartitionTable{reader: reader}
+	buf := make([]byte, 512)
+	_, err := reader.ReadAt(buf, 512)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to read gpt: %w", err)
+	}
+	if err := binary.Read(bytes.NewReader(buf), binary.LittleEndian, &gpt.Header); err != nil {
 		return nil, xerrors.Errorf("failed to binary read: %w", err)
 	}
 
@@ -227,17 +228,18 @@ func NewGUIDPartitionTable(sr *io.SectionReader) (*GUIDPartitionTable, error) {
 	if gpt.Header.NumberOfPartitionEntries*gpt.Header.SizeOfPartitionEntry%Sector != 0 {
 		n += 1
 	}
-	buf := bytes.NewBuffer(nil)
+
+	buffer := bytes.NewBuffer(nil)
 	for i := 0; i < int(n); i++ {
 		b := make([]byte, Sector)
-		n, err := sr.Read(b)
+		n, err := reader.ReadAt(b, int64(i+2)*Sector)
 		if err != nil {
 			return nil, xerrors.Errorf("failed to read entries[%d]: %w", i, err)
 		}
 		if n != Sector {
 			return nil, xerrors.Errorf("invalid read size: actual(%d), expected(%d)", n, Sector)
 		}
-		n, err = buf.Write(b)
+		n, err = buffer.Write(b)
 		if err != nil {
 			return nil, xerrors.Errorf("failed to write buffer: %w", err)
 		}
@@ -248,22 +250,22 @@ func NewGUIDPartitionTable(sr *io.SectionReader) (*GUIDPartitionTable, error) {
 
 	for i := 0; i < int(gpt.Header.NumberOfPartitionEntries); i++ {
 		var partitionEntry PartitionEntry
-		if err := binary.Read(buf, binary.LittleEndian, &partitionEntry.PartitionTypeGUID); err != nil {
+		if err := binary.Read(buffer, binary.LittleEndian, &partitionEntry.PartitionTypeGUID); err != nil {
 			return nil, xerrors.Errorf("failed to parse GPT partition entry[%d] PartitionTypeGUID: %w", i, err)
 		}
-		if err := binary.Read(buf, binary.LittleEndian, &partitionEntry.UniquePartitionGUID); err != nil {
+		if err := binary.Read(buffer, binary.LittleEndian, &partitionEntry.UniquePartitionGUID); err != nil {
 			return nil, xerrors.Errorf("failed to parse GPT partition entry[%d] UniquePartitionGUID: %w", i, err)
 		}
-		if err := binary.Read(buf, binary.LittleEndian, &partitionEntry.StartingLBA); err != nil {
+		if err := binary.Read(buffer, binary.LittleEndian, &partitionEntry.StartingLBA); err != nil {
 			return nil, xerrors.Errorf("failed to parse GPT partition entry[%d] StartingLBA: %w", i, err)
 		}
-		if err := binary.Read(buf, binary.LittleEndian, &partitionEntry.EndingLBA); err != nil {
+		if err := binary.Read(buffer, binary.LittleEndian, &partitionEntry.EndingLBA); err != nil {
 			return nil, xerrors.Errorf("failed to parse GPT partition entry[%d] EndingLBA: %w", i, err)
 		}
-		if err := binary.Read(buf, binary.LittleEndian, &partitionEntry.Attributes); err != nil {
+		if err := binary.Read(buffer, binary.LittleEndian, &partitionEntry.Attributes); err != nil {
 			return nil, xerrors.Errorf("failed to parse GPT partition entry[%d] Attributes: %w", i, err)
 		}
-		if err := binary.Read(buf, binary.LittleEndian, &partitionEntry.PartitionName); err != nil {
+		if err := binary.Read(buffer, binary.LittleEndian, &partitionEntry.PartitionName); err != nil {
 			return nil, xerrors.Errorf("failed to parse GPT partition entry[%d] PartitionName: %w", i, err)
 		}
 		partitionEntry.index = i

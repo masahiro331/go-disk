@@ -13,13 +13,13 @@ type Driver interface {
 	Next() (types.Partition, error)
 }
 
-func NewDriver(sr *io.SectionReader) (Driver, error) {
-	m, err := mbr.NewMasterBootRecord(sr)
+func NewDriver(r io.ReaderAt) (Driver, error) {
+	m, err := mbr.NewMasterBootRecord(r)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to new MBR: %w", err)
 	}
 
-	g, err := gpt.NewGUIDPartitionTable(sr)
+	g, err := gpt.NewGUIDPartitionTable(r)
 	if err != nil {
 		if m.UniqueMBRDiskSignature != [4]byte{0x00, 0x00, 0x00, 0x00} {
 			return m, nil
