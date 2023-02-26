@@ -184,6 +184,7 @@ func NewMasterBootRecord(reader io.ReaderAt) (*MasterBootRecord, error) {
 		if mbr.Partitions[i].Type != 0x05 && mbr.Partitions[i].Type != 0x0f {
 			continue
 		}
+		// TODO: Support Extended Master Boot Record
 		// _, err := sr.Seek(int64(mbr.Partitions[i].StartSector)<<9, 0)
 		// if err != nil {
 		// 	return nil, xerrors.Errorf("failed to seek to extended boot record: %w", err)
@@ -193,7 +194,6 @@ func NewMasterBootRecord(reader io.ReaderAt) (*MasterBootRecord, error) {
 		// 	mbr.Partitions[i].StartSector = mbr.Partitions[i].StartSector + 2
 		// 	mbr.Partitions[i].Size = mbr.Partitions[i].Size - 2
 		// } else {
-		// 	// TODO: Support Extended Master Boot Record
 		// 	return nil, xerrors.New("unsupported extended master boot record")
 		// }
 	}
