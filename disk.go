@@ -3,6 +3,7 @@ package disk
 import (
 	"io"
 
+	"github.com/masahiro331/go-disk/fs"
 	"github.com/masahiro331/go-disk/gpt"
 	"github.com/masahiro331/go-disk/mbr"
 	"github.com/masahiro331/go-disk/types"
@@ -16,6 +17,9 @@ type Driver interface {
 func NewDriver(sr *io.SectionReader) (Driver, error) {
 	m, err := mbr.NewMasterBootRecord(sr)
 	if err != nil {
+		if xerrors.Is(mbr.InvalidSignature, err) {
+			return fs.NewDirectFileSystem(sr), nil
+		}
 		return nil, xerrors.Errorf("failed to new MBR: %w", err)
 	}
 
