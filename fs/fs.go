@@ -7,6 +7,11 @@ import (
 	"golang.org/x/xerrors"
 )
 
+var (
+	_ types.Driver    = &DirectFileSystem{}
+	_ types.Partition = &DirectFileSystemPartition{}
+)
+
 type DirectFileSystem struct {
 	Partition *DirectFileSystemPartition
 }

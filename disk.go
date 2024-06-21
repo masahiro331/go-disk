@@ -10,16 +10,12 @@ import (
 	"golang.org/x/xerrors"
 )
 
-type Driver interface {
-	Next() (types.Partition, error)
-}
-
 func NewDriver(
 	sr *io.SectionReader,
 	checkFsFuncs ...func(
 		r io.Reader,
 	) bool,
-) (Driver, error) {
+) (types.Driver, error) {
 	m, err := mbr.NewMasterBootRecord(sr)
 	if err != nil {
 		if xerrors.Is(mbr.InvalidSignature, err) {
