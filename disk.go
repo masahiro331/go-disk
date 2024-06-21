@@ -14,11 +14,22 @@ type Driver interface {
 	Next() (types.Partition, error)
 }
 
-func NewDriver(sr *io.SectionReader) (Driver, error) {
+func NewDriver(
+	sr *io.SectionReader,
+	checkFsFuncs ...func(
+		r io.Reader,
+	) bool,
+) (Driver, error) {
 	m, err := mbr.NewMasterBootRecord(sr)
 	if err != nil {
 		if xerrors.Is(mbr.InvalidSignature, err) {
-			return fs.NewDirectFileSystem(sr), nil
+			ok, err := fs.CheckFileSystem(sr, checkFsFuncs)
+			if err != nil {
+				return nil, xerrors.Errorf("failed to check filesystem: %w", err)
+			}
+			if ok {
+				return fs.NewDirectFileSystem(sr), nil
+			}
 		}
 		return nil, xerrors.Errorf("failed to new MBR: %w", err)
 	}

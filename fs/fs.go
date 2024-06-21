@@ -4,6 +4,7 @@ import (
 	"io"
 
 	"github.com/masahiro331/go-disk/types"
+	"golang.org/x/xerrors"
 )
 
 type DirectFileSystem struct {
@@ -62,4 +63,22 @@ func NewDirectFileSystem(sr *io.SectionReader) *DirectFileSystem {
 			sectionReader: sr,
 		},
 	}
+}
+
+func CheckFileSystem(
+	r *io.SectionReader,
+	checkFsFuncs []func(
+		r io.Reader,
+	) bool,
+) (bool, error) {
+	for _, checkFsFunc := range checkFsFuncs {
+		_, err := r.Seek(0, io.SeekStart)
+		if err != nil {
+			return false, xerrors.Errorf("failed to seek offset error: %w", err)
+		}
+		if checkFsFunc(r) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
