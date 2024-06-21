@@ -24,7 +24,7 @@ func NewDriver(
 				return nil, xerrors.Errorf("failed to check filesystem: %w", err)
 			}
 			if ok {
-				return fs.NewDirectFileSystem(sr), nil
+				return fs.NewDirectFileSystem(sr)
 			}
 		}
 		return nil, xerrors.Errorf("failed to new MBR: %w", err)

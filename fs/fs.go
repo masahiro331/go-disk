@@ -58,12 +58,16 @@ func (p DirectFileSystemPartition) IsSupported() bool {
 	return true
 }
 
-func NewDirectFileSystem(sr *io.SectionReader) *DirectFileSystem {
+func NewDirectFileSystem(sr *io.SectionReader) (*DirectFileSystem, error) {
+	_, err := sr.Seek(0, io.SeekStart)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to DirectFileSystem seek offset error: %w", err)
+	}
 	return &DirectFileSystem{
 		Partition: &DirectFileSystemPartition{
 			sectionReader: sr,
 		},
-	}
+	}, nil
 }
 
 func CheckFileSystem(
