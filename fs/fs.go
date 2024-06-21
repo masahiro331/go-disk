@@ -25,10 +25,6 @@ type DirectFileSystemPartition struct {
 	sectionReader *io.SectionReader
 }
 
-func (p DirectFileSystemPartition) Index() int {
-	return 0
-}
-
 func (p DirectFileSystemPartition) Name() string {
 	return "0"
 }
