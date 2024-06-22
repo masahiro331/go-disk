@@ -70,7 +70,7 @@ func NewDirectFileSystem(sr *io.SectionReader) (*DirectFileSystem, error) {
 	}, nil
 }
 
-func CheckFileSystem(
+func CheckFileSystems(
 	r *io.SectionReader,
 	checkFsFuncs []func(
 		r io.Reader,

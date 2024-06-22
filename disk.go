@@ -19,7 +19,7 @@ func NewDriver(
 	m, err := mbr.NewMasterBootRecord(sr)
 	if err != nil {
 		if xerrors.Is(mbr.InvalidSignature, err) {
-			ok, err := fs.CheckFileSystem(sr, checkFsFuncs)
+			ok, err := fs.CheckFileSystems(sr, checkFsFuncs)
 			if err != nil {
 				return nil, xerrors.Errorf("failed to check filesystem: %w", err)
 			}
