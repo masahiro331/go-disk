@@ -70,12 +70,9 @@ func NewDirectFileSystem(sr *io.SectionReader) (*DirectFileSystem, error) {
 	}, nil
 }
 
-func CheckFileSystems(
-	r *io.SectionReader,
-	checkFsFuncs []func(
-		r io.Reader,
-	) bool,
-) (bool, error) {
+type CheckFsFunc func(r io.Reader) bool
+
+func CheckFileSystems(r *io.SectionReader, checkFsFuncs []CheckFsFunc) (bool, error) {
 	for _, checkFsFunc := range checkFsFuncs {
 		_, err := r.Seek(0, io.SeekStart)
 		if err != nil {
