@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
-	"github.com/masahiro331/go-disk"
 	"io"
 	"log"
 	"os"
+
+	"github.com/masahiro331/go-disk"
+	"github.com/masahiro331/go-xfs-filesystem/xfs"
 )
 
 func main() {
@@ -21,7 +23,7 @@ func main() {
 		log.Fatal(err)
 	}
 	r := io.NewSectionReader(f, 0, fi.Size())
-	driver, err := disk.NewDriver(r)
+	driver, err := disk.NewDriver(r, xfs.Check)
 	if err != nil {
 		log.Fatal(err)
 	}
