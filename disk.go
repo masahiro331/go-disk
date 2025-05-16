@@ -13,7 +13,7 @@ import (
 func NewDriver(sr *io.SectionReader, checkFsFuncs ...fs.CheckFsFunc) (types.Driver, error) {
 	m, err := mbr.NewMasterBootRecord(sr)
 	if err != nil {
-		if xerrors.Is(mbr.InvalidSignature, err) {
+		if xerrors.Is(mbr.EmptyPartitionTable, err) || xerrors.Is(mbr.InvalidSignature, err) {
 			ok, err := fs.CheckFileSystems(sr, checkFsFuncs)
 			if err != nil {
 				return nil, xerrors.Errorf("failed to check filesystem: %w", err)
