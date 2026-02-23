@@ -103,6 +103,11 @@ func TestGUIDPartitionTable_Next(t *testing.T) {
 				if pe.Index() != want {
 					t.Errorf("Next() call %d: got index %d, want %d", i, pe.Index(), want)
 				}
+				sr := pe.GetSectionReader()
+				expectedSize := int64(pe.GetSize() * 512)
+				if sr.Size() != expectedSize {
+					t.Errorf("Next() call %d: SectionReader size = %d, want %d", i, sr.Size(), expectedSize)
+				}
 			}
 
 			_, err := gpt.Next()
