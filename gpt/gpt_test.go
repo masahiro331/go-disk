@@ -6,21 +6,25 @@ import (
 	"testing"
 )
 
-func newSectionReader(size int) *io.SectionReader {
+func newSectionReaderWithMarkers(size int, markers map[int64]byte) *io.SectionReader {
 	buf := make([]byte, size)
+	for offset, b := range markers {
+		buf[offset] = b
+	}
 	return io.NewSectionReader(bytes.NewReader(buf), 0, int64(size))
 }
 
 func TestGUIDPartitionTable_Next(t *testing.T) {
 	tests := []struct {
-		name            string
-		entries         []PartitionEntry
-		expectedIndices []int
+		name    string
+		entries []PartitionEntry
+		// marker byte written at each entry's StartingLBA * 512
+		markers []byte
 	}{
 		{
-			name:            "empty entries",
-			entries:         []PartitionEntry{},
-			expectedIndices: nil,
+			name:    "empty entries",
+			entries: []PartitionEntry{},
+			markers: nil,
 		},
 		{
 			name: "single entry with non-zero index",
@@ -32,7 +36,7 @@ func TestGUIDPartitionTable_Next(t *testing.T) {
 					index:             5,
 				},
 			},
-			expectedIndices: []int{5},
+			markers: []byte{0xAA},
 		},
 		{
 			name: "contiguous indices",
@@ -56,7 +60,7 @@ func TestGUIDPartitionTable_Next(t *testing.T) {
 					index:             2,
 				},
 			},
-			expectedIndices: []int{0, 1, 2},
+			markers: []byte{0xAA, 0xBB, 0xCC},
 		},
 		{
 			name: "non-contiguous indices",
@@ -80,18 +84,24 @@ func TestGUIDPartitionTable_Next(t *testing.T) {
 					index:             14,
 				},
 			},
-			expectedIndices: []int{0, 13, 14},
+			markers: []byte{0xAA, 0xBB, 0xCC},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gpt := &GUIDPartitionTable{
-				Entries:       tt.entries,
-				sectionReader: newSectionReader(8192 * 512),
+			// Write marker bytes at each entry's starting offset
+			markerMap := make(map[int64]byte)
+			for i, e := range tt.entries {
+				markerMap[int64(e.StartingLBA)*512] = tt.markers[i]
 			}
 
-			for i, want := range tt.expectedIndices {
+			gpt := &GUIDPartitionTable{
+				Entries:       tt.entries,
+				sectionReader: newSectionReaderWithMarkers(8192*512, markerMap),
+			}
+
+			for i := range tt.entries {
 				p, err := gpt.Next()
 				if err != nil {
 					t.Fatalf("Next() call %d: unexpected error: %v", i, err)
@@ -100,13 +110,23 @@ func TestGUIDPartitionTable_Next(t *testing.T) {
 				if !ok {
 					t.Fatalf("Next() call %d: unexpected type %T", i, p)
 				}
-				if pe.Index() != want {
-					t.Errorf("Next() call %d: got index %d, want %d", i, pe.Index(), want)
+				if pe.Index() != tt.entries[i].index {
+					t.Errorf("Next() call %d: got index %d, want %d", i, pe.Index(), tt.entries[i].index)
 				}
+
 				sr := pe.GetSectionReader()
 				expectedSize := int64(pe.GetSize() * 512)
 				if sr.Size() != expectedSize {
 					t.Errorf("Next() call %d: SectionReader size = %d, want %d", i, sr.Size(), expectedSize)
+				}
+
+				// Verify SectionReader reads from the correct offset
+				b := make([]byte, 1)
+				if _, err := sr.Read(b); err != nil {
+					t.Fatalf("Next() call %d: SectionReader.Read() error: %v", i, err)
+				}
+				if b[0] != tt.markers[i] {
+					t.Errorf("Next() call %d: first byte = %x, want %x", i, b[0], tt.markers[i])
 				}
 			}
 
