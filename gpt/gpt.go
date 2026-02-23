@@ -71,22 +71,22 @@ type GUIDPartitionTable struct {
 	Header  Header
 	Entries []PartitionEntry
 
+	currentIndex  int
 	currentEntry  *PartitionEntry
 	sectionReader *io.SectionReader
 }
 
 func (gpt *GUIDPartitionTable) Next() (types.Partition, error) {
-	index := 0
 	if gpt.currentEntry != nil {
 		// initialize current partition readseeker  // TODO: use mutex
 		gpt.currentEntry.sectionReader = nil
-		index = gpt.currentEntry.index + 1
 	}
-	if len(gpt.Entries) <= index {
+	if gpt.currentIndex >= len(gpt.Entries) {
 		return nil, io.EOF
 	}
 
-	gpt.currentEntry = &gpt.Entries[index]
+	gpt.currentEntry = &gpt.Entries[gpt.currentIndex]
+	gpt.currentIndex++
 	offset := int64(gpt.currentEntry.GetStartSector()) * 512
 	_, err := gpt.sectionReader.Seek(offset, 0)
 	if err != nil {
