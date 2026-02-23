@@ -142,16 +142,16 @@ func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 	r := bytes.NewReader(buf)
 	mbr := MasterBootRecord{sectionReader: sr}
 
+	if err := binary.Read(r, binary.LittleEndian, &mbr.BootCodeArea); err != nil {
+		return nil, xerrors.Errorf("failed to parse boot code: %w", err)
+	}
+
 	if err := binary.Read(r, binary.LittleEndian, &mbr.UniqueMBRDiskSignature); err != nil {
 		return nil, xerrors.Errorf("failed to parse unique MBR disk signature: %w", err)
 	}
 
 	if err := binary.Read(r, binary.LittleEndian, &mbr.Unknown); err != nil {
 		return nil, xerrors.Errorf("failed to parse unknown: %w", err)
-	}
-
-	if err := binary.Read(r, binary.LittleEndian, &mbr.BootCodeArea); err != nil {
-		return nil, xerrors.Errorf("failed to parse boot code: %w", err)
 	}
 
 	for i := 0; i < len(mbr.Partitions); i++ {
