@@ -88,7 +88,7 @@ func TestNewMasterBootRecord_FieldParseOrder(t *testing.T) {
 	buf := make([]byte, 512)
 
 	// BootCodeArea: set recognizable bytes at the start and end
-	buf[0] = 0xEB   // typical JMP instruction
+	buf[0] = 0xEB // typical JMP instruction
 	buf[1] = 0x5A
 	buf[439] = 0xFF // last byte of BootCodeArea
 
@@ -147,8 +147,8 @@ func TestMasterBootRecord_Next(t *testing.T) {
 
 	// Write marker bytes in each partition's data area so we can
 	// verify that SectionReader reads from the correct offset.
-	buf[2*512] = 0xAA   // first byte of partition 0 data
-	buf[8*512] = 0xBB   // first byte of partition 1 data
+	buf[2*512] = 0xAA // first byte of partition 0 data
+	buf[8*512] = 0xBB // first byte of partition 1 data
 
 	// --- Write MBR at sector 0 (bytes 0-511) ---
 	writePartitionEntry(buf[446:], true, 0x83, 2, 4)
