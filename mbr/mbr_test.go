@@ -102,7 +102,13 @@ func TestNewMasterBootRecord_FieldParseOrder(t *testing.T) {
 	buf[444] = 0xCA
 	buf[445] = 0xFE
 
-	// Partitions (bytes 446-509): leave zeros = unused
+	// Partitions (bytes 446-509): set at least one non-empty partition
+	// to avoid EmptyPartitionTable error when PR #4 is merged.
+	// Partition 0: Type = 0x83 (Linux) at byte 450, StartSector at 454, Size at 458
+	buf[450] = 0x83
+	binary.LittleEndian.PutUint32(buf[454:], 1)
+	binary.LittleEndian.PutUint32(buf[458:], 1)
+
 	// Signature (bytes 510-511)
 	binary.LittleEndian.PutUint16(buf[510:], 0xAA55)
 
