@@ -90,16 +90,25 @@ func TestGUIDPartitionTable_Next(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			gpt := &GUIDPartitionTable{
+				Entries:       tt.entries,
+				sectionReader: newSectionReaderWithMarkers(8192*512, nil),
+			}
+
+			if len(tt.entries) == 0 {
+				_, err := gpt.Next()
+				if err != io.EOF {
+					t.Errorf("Next() on empty entries: got %v, want io.EOF", err)
+				}
+				return
+			}
+
 			// Write marker bytes at each entry's starting offset
 			markerMap := make(map[int64]byte)
 			for i, e := range tt.entries {
 				markerMap[int64(e.StartingLBA)*512] = tt.markers[i]
 			}
-
-			gpt := &GUIDPartitionTable{
-				Entries:       tt.entries,
-				sectionReader: newSectionReaderWithMarkers(8192*512, markerMap),
-			}
+			gpt.sectionReader = newSectionReaderWithMarkers(8192*512, markerMap)
 
 			for i := range tt.entries {
 				p, err := gpt.Next()
