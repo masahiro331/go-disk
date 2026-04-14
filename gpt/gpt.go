@@ -7,6 +7,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/masahiro331/go-disk/types"
 	"golang.org/x/xerrors"
@@ -98,7 +99,7 @@ func (gpt *GUIDPartitionTable) Next() (types.Partition, error) {
 }
 
 func (pe PartitionEntry) Name() string {
-	name := trimNullByte(pe.PartitionName[:])
+	name := decodePartitionName(pe.PartitionName[:])
 
 	switch name {
 	case "/":
@@ -114,16 +115,17 @@ func (pe PartitionEntry) Index() int {
 	return pe.index
 }
 
-func trimNullByte(bytes []byte) string {
-	var bs []byte
-	for _, b := range bytes {
-		if b == 0x00 {
-			continue
+func decodePartitionName(utf16Name []uint16) string {
+	var bs []uint16
+	for _, b := range utf16Name {
+		// null terminated string
+		if b == 0x0 {
+			break
 		}
 		bs = append(bs, b)
 	}
 
-	return string(bs)
+	return string(utf16.Decode(bs))
 }
 
 func (pe PartitionEntry) GetStartSector() uint64 {
@@ -173,7 +175,7 @@ type PartitionEntry struct {
 	StartingLBA         uint64
 	EndingLBA           uint64
 	Attributes          uint64
-	PartitionName       [72]byte
+	PartitionName       [36]uint16 // UTF-16 encoded
 
 	index int
 
