@@ -49,6 +49,7 @@ Master Boot Record always 512 bytes.
 ref: https://www.ijais.org/research/volume10/number8/sadi-2016-ijais-451541.pdf
 */
 
+var EmptyPartitionTable = xerrors.New("All partitions in the master boot record are empty")
 var InvalidSignature = xerrors.New("Invalid master boot record signature")
 
 type MasterBootRecord struct {
@@ -183,7 +184,12 @@ func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 		return nil, InvalidSignature
 	}
 
+	emptyPartitions := 0
 	for i := 0; i < len(mbr.Partitions); i++ {
+		if mbr.Partitions[i].Type == 0 {
+			emptyPartitions++
+			continue
+		}
 		if mbr.Partitions[i].Type != 0x05 && mbr.Partitions[i].Type != 0x0f {
 			continue
 		}
@@ -200,6 +206,11 @@ func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 			return nil, xerrors.New("unsupported extended master boot record")
 		}
 	}
+
+	if emptyPartitions == len(mbr.Partitions) {
+		return nil, EmptyPartitionTable
+	}
+
 	return &mbr, nil
 }
 
