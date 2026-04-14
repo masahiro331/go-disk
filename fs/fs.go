@@ -46,8 +46,10 @@ func (p DirectFileSystemPartition) Bootable() bool {
 	return false
 }
 
+// GetSize returns 0 because DirectFileSystem has no partition table
+// and sector-based size is not applicable.
 func (p DirectFileSystemPartition) GetSize() uint64 {
-	return uint64(p.sectionReader.Size())
+	return 0
 }
 
 func (p DirectFileSystemPartition) GetSectionReader() io.SectionReader {
