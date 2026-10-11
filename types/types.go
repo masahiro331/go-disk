@@ -7,6 +7,9 @@ type Driver interface {
 }
 
 type Partition interface {
+	// ReadAt reads from the partition, bounded to its range.
+	io.ReaderAt
+
 	Bootable() bool
 	GetStartSector() uint64
 	Name() string
