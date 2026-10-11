@@ -2,9 +2,9 @@ package fs
 
 import (
 	"io"
+	"math"
 
 	"github.com/masahiro331/go-disk/types"
-	"golang.org/x/xerrors"
 )
 
 var (
@@ -52,6 +52,14 @@ func (p DirectFileSystemPartition) GetSize() uint64 {
 	return 0
 }
 
+// ReadAt reads from the filesystem. Reads are bounded to the size determined by NewDirectFileSystem.
+// It is safe for concurrent use if the underlying disk reader is.
+func (p DirectFileSystemPartition) ReadAt(b []byte, off int64) (int, error) {
+	return p.sectionReader.ReadAt(b, off)
+}
+
+// GetSectionReader returns a new SectionReader over the filesystem.
+// Each call returns an independent reader with its own read offset.
 func (p DirectFileSystemPartition) GetSectionReader() io.SectionReader {
 	return *p.sectionReader
 }
@@ -60,29 +68,33 @@ func (p DirectFileSystemPartition) IsSupported() bool {
 	return true
 }
 
-func NewDirectFileSystem(sr *io.SectionReader) (*DirectFileSystem, error) {
-	_, err := sr.Seek(0, io.SeekStart)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to DirectFileSystem seek offset error: %w", err)
-	}
+// NewDirectFileSystem treats the whole of r as a single filesystem.
+// If r has a Size method (e.g. *io.SectionReader), reads are bounded to that size.
+func NewDirectFileSystem(r io.ReaderAt) (*DirectFileSystem, error) {
 	return &DirectFileSystem{
 		Partition: &DirectFileSystemPartition{
-			sectionReader: sr,
+			sectionReader: newSectionReader(r),
 		},
 	}, nil
 }
 
 type CheckFsFunc func(r io.Reader) bool
 
-func CheckFileSystems(r *io.SectionReader, checkFsFuncs []CheckFsFunc) (bool, error) {
+// CheckFileSystems reports whether any of checkFsFuncs recognizes a filesystem at the start of r.
+// Each function reads through its own reader, so the checks do not share a read offset.
+func CheckFileSystems(r io.ReaderAt, checkFsFuncs []CheckFsFunc) (bool, error) {
 	for _, checkFsFunc := range checkFsFuncs {
-		_, err := r.Seek(0, io.SeekStart)
-		if err != nil {
-			return false, xerrors.Errorf("failed to seek offset error: %w", err)
-		}
-		if checkFsFunc(r) {
+		if checkFsFunc(newSectionReader(r)) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func newSectionReader(r io.ReaderAt) *io.SectionReader {
+	size := int64(math.MaxInt64)
+	if s, ok := r.(interface{ Size() int64 }); ok {
+		size = s.Size()
+	}
+	return io.NewSectionReader(r, 0, size)
 }
