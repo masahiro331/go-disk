@@ -238,8 +238,10 @@ func NewGUIDPartitionTable(r io.ReaderAt) (*GUIDPartitionTable, error) {
 		return nil, xerrors.Errorf("not support GPT format error: actual(%d byte), expected(%d byte)", gpt.Header.SizeOfPartitionEntry, PartitionEntrySize)
 	}
 
-	if Sector-len(gpt.Header.ReservedPadding) != int(gpt.Header.HeaderSize) {
-		return nil, xerrors.Errorf("invalid header size error: actual(%d), expected(%d)", Sector-len(gpt.Header.ReservedPadding), gpt.Header.HeaderSize)
+	// Bytes past the defined fields are reserved, so a larger header up to a sector is valid.
+	minHeaderSize := Sector - len(gpt.Header.ReservedPadding)
+	if int(gpt.Header.HeaderSize) < minHeaderSize || gpt.Header.HeaderSize > Sector {
+		return nil, xerrors.Errorf("invalid header size error: actual(%d), expected(%d-%d)", gpt.Header.HeaderSize, minHeaderSize, Sector)
 	}
 
 	if string(gpt.Header.Signature[:]) != Signature {
