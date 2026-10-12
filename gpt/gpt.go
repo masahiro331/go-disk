@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	Sector             = 0x200
-	Signature          = "EFI PART"
+	// Sector is the logical block size. Disks with 4096-byte logical blocks (4Kn) are not supported.
+	Sector    = 0x200
+	Signature = "EFI PART"
+	// PartitionEntrySize is the only entry size accepted. The UEFI spec allows 128 * 2^n, but Linux also accepts only 128.
 	PartitionEntrySize = 128
 	BootTypeID         = "Hah!IdontNeedEFI"
 

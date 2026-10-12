@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	SIGNATURE        = 0xAA55
+	SIGNATURE = 0xAA55
+	// Sector is the logical block size. Disks with 4096-byte logical blocks (4Kn) are not supported.
 	Sector           = 512
 	maxEBRChainDepth = 256
 )
