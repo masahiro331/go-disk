@@ -11,6 +11,7 @@ import (
 )
 
 // NewDriver parses the partition table of r.
+// The disk is GPT if any MBR entry has type 0xEE, and MBR otherwise. Linux also ignores MBR partitions in that case.
 // r is read only with ReadAt, and partitions returned by the driver can be read concurrently
 // if r supports concurrent ReadAt calls. *io.SectionReader satisfies io.ReaderAt.
 func NewDriver(r io.ReaderAt, checkFsFuncs ...fs.CheckFsFunc) (types.Driver, error) {
@@ -28,13 +29,23 @@ func NewDriver(r io.ReaderAt, checkFsFuncs ...fs.CheckFsFunc) (types.Driver, err
 		return nil, xerrors.Errorf("failed to new MBR: %w", err)
 	}
 
+	if !hasGPTProtectiveEntry(m) {
+		return m, nil
+	}
+
 	g, err := gpt.NewGUIDPartitionTable(r)
 	if err != nil {
-		if m.UniqueMBRDiskSignature != [4]byte{0x00, 0x00, 0x00, 0x00} {
-			return m, nil
-		}
 		return nil, xerrors.Errorf("failed to parse GUID partition table: %w", err)
 	}
 
 	return g, nil
+}
+
+func hasGPTProtectiveEntry(m *mbr.MasterBootRecord) bool {
+	for _, p := range m.Partitions {
+		if p.Type == 0xEE {
+			return true
+		}
+	}
+	return false
 }
