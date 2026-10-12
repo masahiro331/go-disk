@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"math/rand"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -466,6 +467,32 @@ func TestNewGUIDPartitionTable_PartitionEntryLBA(t *testing.T) {
 			}
 			if r.reads != tt.wantReads {
 				t.Errorf("ReadAt called %d times, want %d", r.reads, tt.wantReads)
+			}
+		})
+	}
+}
+
+func TestNewGUIDPartitionTable_HeaderSize(t *testing.T) {
+	tests := []struct {
+		size    uint32
+		wantErr bool
+	}{
+		{size: 91, wantErr: true},
+		{size: 92, wantErr: false},
+		{size: 512, wantErr: false},
+		{size: 513, wantErr: true},
+		{size: math.MaxUint32, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(strconv.FormatUint(uint64(tt.size), 10), func(t *testing.T) {
+			disk := newGPTDiskWithEntries([][2]uint64{{10, 17}})
+			binary.LittleEndian.PutUint32(disk[Sector+12:], tt.size) // HeaderSize
+			g, err := NewGUIDPartitionTable(bytes.NewReader(disk))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("NewGUIDPartitionTable() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err == nil && (len(g.Entries) != 1 || g.Entries[0].StartingLBA != 10 || g.Entries[0].EndingLBA != 17) {
+				t.Errorf("Entries = %+v, want one entry at LBA 10-17", g.Entries)
 			}
 		})
 	}
