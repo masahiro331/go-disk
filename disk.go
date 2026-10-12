@@ -10,22 +10,25 @@ import (
 	"golang.org/x/xerrors"
 )
 
-func NewDriver(sr *io.SectionReader, checkFsFuncs ...fs.CheckFsFunc) (types.Driver, error) {
-	m, err := mbr.NewMasterBootRecord(sr)
+// NewDriver parses the partition table of r.
+// r is read only with ReadAt, and partitions returned by the driver can be read concurrently
+// if r supports concurrent ReadAt calls. *io.SectionReader satisfies io.ReaderAt.
+func NewDriver(r io.ReaderAt, checkFsFuncs ...fs.CheckFsFunc) (types.Driver, error) {
+	m, err := mbr.NewMasterBootRecord(r)
 	if err != nil {
 		if xerrors.Is(err, mbr.EmptyPartitionTable) || xerrors.Is(err, mbr.InvalidSignature) {
-			ok, err := fs.CheckFileSystems(sr, checkFsFuncs)
+			ok, err := fs.CheckFileSystems(r, checkFsFuncs)
 			if err != nil {
 				return nil, xerrors.Errorf("failed to check filesystem: %w", err)
 			}
 			if ok {
-				return fs.NewDirectFileSystem(sr)
+				return fs.NewDirectFileSystem(r)
 			}
 		}
 		return nil, xerrors.Errorf("failed to new MBR: %w", err)
 	}
 
-	g, err := gpt.NewGUIDPartitionTable(sr)
+	g, err := gpt.NewGUIDPartitionTable(r)
 	if err != nil {
 		if m.UniqueMBRDiskSignature != [4]byte{0x00, 0x00, 0x00, 0x00} {
 			return m, nil

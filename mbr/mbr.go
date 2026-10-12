@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"math"
 	"strconv"
 
 	"github.com/masahiro331/go-disk/types"
@@ -59,8 +60,8 @@ type MasterBootRecord struct {
 	Partitions             [4]Partition
 	Signature              uint16
 
-	currentPartition *Partition
-	sectionReader    *io.SectionReader
+	nextIndex     int
+	sectionReader io.ReaderAt
 }
 
 type CHS [3]byte
@@ -79,25 +80,22 @@ type Partition struct {
 	sectionReader *io.SectionReader
 }
 
+// Next returns the next partition.
+// Partitions returned by earlier calls remain readable, so they can be read concurrently.
 func (m *MasterBootRecord) Next() (types.Partition, error) {
-	index := 0
-	if m.currentPartition != nil {
-		m.currentPartition.sectionReader = nil
-		index = m.currentPartition.index + 1
-	}
-	if len(m.Partitions) <= index {
+	if len(m.Partitions) <= m.nextIndex {
 		return nil, io.EOF
 	}
 
-	m.currentPartition = &m.Partitions[index]
-	offset := int64(m.currentPartition.GetStartSector()) * 512
-	_, err := m.sectionReader.Seek(offset, 0)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to seek partition(%d): %w", m.currentPartition.Index(), err)
+	partition := &m.Partitions[m.nextIndex]
+	m.nextIndex++
+	if partition.sectionReader == nil {
+		// Partitions built by NewMasterBootRecord already have a reader.
+		// This covers records constructed without it.
+		partition.sectionReader = partition.newSectionReader(m.sectionReader)
 	}
-	m.currentPartition.sectionReader = io.NewSectionReader(m.sectionReader, offset, int64(m.currentPartition.GetSize()*512))
 
-	return m.currentPartition, nil
+	return partition, nil
 }
 
 func (p Partition) Index() int {
@@ -126,18 +124,32 @@ func (p Partition) GetSize() uint64 {
 	return uint64(p.Size)
 }
 
+// ReadAt reads from the partition. Reads are bounded to the partition range.
+// It is safe for concurrent use if the underlying disk reader is.
+func (p Partition) ReadAt(b []byte, off int64) (int, error) {
+	return p.sectionReader.ReadAt(b, off)
+}
+
+// GetSectionReader returns a new SectionReader over the partition.
+// Each call returns an independent reader with its own read offset.
 func (p Partition) GetSectionReader() io.SectionReader {
 	return *p.sectionReader
 }
 
-func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
+func (p Partition) newSectionReader(r io.ReaderAt) *io.SectionReader {
+	return io.NewSectionReader(r, int64(p.GetStartSector())*Sector, int64(p.GetSize()*Sector))
+}
+
+// NewMasterBootRecord parses the master boot record in the first sector of sr.
+// It reads from sr only with ReadAt, so sr is not required to keep a read offset.
+func NewMasterBootRecord(sr io.ReaderAt) (*MasterBootRecord, error) {
 	buf := make([]byte, Sector)
-	size, err := sr.Read(buf)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to read mbr error: %w", err)
-	}
+	size, err := sr.ReadAt(buf, 0)
 	if size != Sector {
-		return nil, xerrors.Errorf("binary size error: actual(%d), expected(%d)", Sector, size)
+		if err == nil {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, xerrors.Errorf("failed to read mbr error: %w", err)
 	}
 
 	r := bytes.NewReader(buf)
@@ -193,11 +205,9 @@ func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 		if mbr.Partitions[i].Type != 0x05 && mbr.Partitions[i].Type != 0x0f {
 			continue
 		}
-		_, err := sr.Seek(int64(mbr.Partitions[i].StartSector)<<9, 0)
-		if err != nil {
-			return nil, xerrors.Errorf("failed to seek to extended boot record: %w", err)
-		}
-		_, err = NewMasterBootRecord(sr)
+		// Pass the range up to the end of the disk, as the former Seek did.
+		off := int64(mbr.Partitions[i].StartSector) << 9
+		_, err := NewMasterBootRecord(io.NewSectionReader(sr, off, math.MaxInt64-off))
 		if xerrors.Is(err, InvalidSignature) {
 			mbr.Partitions[i].StartSector = mbr.Partitions[i].StartSector + 2
 			mbr.Partitions[i].Size = mbr.Partitions[i].Size - 2
@@ -209,6 +219,11 @@ func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 
 	if emptyPartitions == len(mbr.Partitions) {
 		return nil, EmptyPartitionTable
+	}
+
+	// Set readers after the extended partition adjustment above.
+	for i := range mbr.Partitions {
+		mbr.Partitions[i].sectionReader = mbr.Partitions[i].newSectionReader(sr)
 	}
 
 	return &mbr, nil
