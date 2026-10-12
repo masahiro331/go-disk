@@ -201,7 +201,7 @@ func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 			emptyPartitions++
 			continue
 		}
-		if mbr.Partitions[i].Type != 0x05 && mbr.Partitions[i].Type != 0x0f {
+		if !isExtended(mbr.Partitions[i].Type) {
 			continue
 		}
 		logicals, err := parseEBRChain(sr, mbr.Partitions[i].StartSector)
@@ -231,6 +231,13 @@ func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 	}
 
 	return &mbr, nil
+}
+
+// isExtended reports whether t is an extended partition type whose EBR chain holds logical partitions:
+// 0x05 (CHS addressing), 0x0f (LBA addressing) or 0x85 (Linux extended).
+// These are the types the Linux kernel treats as extended; hidden types such as 0x15 and 0x1f are not.
+func isExtended(t byte) bool {
+	return t == 0x05 || t == 0x0f || t == 0x85
 }
 
 func (p Partition) IsSupported() bool {

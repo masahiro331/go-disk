@@ -276,6 +276,52 @@ func TestMasterBootRecord_Next_ExtendedSingleLogical(t *testing.T) {
 	}
 }
 
+func TestMasterBootRecord_Next_ExtendedTypes(t *testing.T) {
+	tests := []struct {
+		name     string
+		typeByte byte
+	}{
+		{name: "CHS", typeByte: 0x05},
+		{name: "LBA", typeByte: 0x0f},
+		{name: "Linux", typeByte: 0x85},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, 30*512)
+			writePartitionEntry(buf[446:], true, 0x83, 2, 4)
+			writePartitionEntry(buf[462:], false, tt.typeByte, 10, 20)
+			binary.LittleEndian.PutUint16(buf[510:], 0xAA55)
+
+			ebr1 := 10 * 512
+			writePartitionEntry(buf[ebr1+446:], false, 0x83, 1, 5)
+			binary.LittleEndian.PutUint16(buf[ebr1+510:], 0xAA55)
+
+			m, err := mbr.NewMasterBootRecord(io.NewSectionReader(newReaderAt(buf), 0, int64(len(buf))))
+			if err != nil {
+				t.Fatalf("NewMasterBootRecord() unexpected error: %v", err)
+			}
+
+			// Next() returns the 4 primary entries first, then the logical partitions.
+			var logicalStarts []uint64
+			for i := 0; ; i++ {
+				p, err := m.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("Next() unexpected error: %v", err)
+				}
+				if i >= len(m.Partitions) {
+					logicalStarts = append(logicalStarts, p.GetStartSector())
+				}
+			}
+			if len(logicalStarts) != 1 || logicalStarts[0] != 11 {
+				t.Errorf("logical partition start sectors = %v, want [11]", logicalStarts)
+			}
+		})
+	}
+}
+
 func TestMasterBootRecord_Next_ExtendedMultipleLogicals(t *testing.T) {
 	// Disk layout:
 	//   Sector 0:     MBR
