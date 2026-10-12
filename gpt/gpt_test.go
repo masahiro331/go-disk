@@ -379,3 +379,44 @@ func TestPartitionEntry_InvalidRange(t *testing.T) {
 		})
 	}
 }
+
+// countingReaderAt counts the ReadAt calls, to check that nothing is read past the header.
+type countingReaderAt struct {
+	r     io.ReaderAt
+	reads int
+}
+
+func (c *countingReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	c.reads++
+	return c.r.ReadAt(p, off)
+}
+
+func TestNewGUIDPartitionTable_EntryArraySize(t *testing.T) {
+	const maxEntries = (4 << 20) / PartitionEntrySize
+
+	t.Run("over the limit", func(t *testing.T) {
+		disk := newGPTDiskWithEntries(nil)
+		binary.LittleEndian.PutUint32(disk[Sector+80:], maxEntries+1) // NumberOfPartitionEntries
+		r := &countingReaderAt{r: bytes.NewReader(disk)}
+		if _, err := NewGUIDPartitionTable(r); err == nil {
+			t.Fatal("NewGUIDPartitionTable() expected error, got nil")
+		}
+		if r.reads != 1 {
+			t.Errorf("ReadAt called %d times, want 1 (the header only)", r.reads)
+		}
+	})
+
+	t.Run("at the limit", func(t *testing.T) {
+		// The entry array is all zeros, so every entry is unused.
+		disk := make([]byte, 2*Sector+4<<20)
+		copy(disk, newGPTDiskWithEntries(nil)[:2*Sector])
+		binary.LittleEndian.PutUint32(disk[Sector+80:], maxEntries) // NumberOfPartitionEntries
+		g, err := NewGUIDPartitionTable(bytes.NewReader(disk))
+		if err != nil {
+			t.Fatalf("NewGUIDPartitionTable() unexpected error: %v", err)
+		}
+		if len(g.Entries) != 0 {
+			t.Errorf("got %d entries, want 0", len(g.Entries))
+		}
+	})
+}
