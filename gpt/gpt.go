@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -128,7 +129,11 @@ func (pe PartitionEntry) GetStartSector() uint64 {
 	return pe.StartingLBA
 }
 
+// GetSize returns the size in sectors, or 0 if the entry's range is invalid.
 func (pe PartitionEntry) GetSize() uint64 {
+	if pe.EndingLBA < pe.StartingLBA || pe.EndingLBA >= math.MaxInt64/Sector {
+		return 0
+	}
 	return pe.EndingLBA - pe.StartingLBA + 1
 }
 
