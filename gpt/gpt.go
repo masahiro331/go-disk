@@ -222,7 +222,7 @@ func (g *PartitionEntry) isUsed() bool {
 	return false
 }
 
-// NewGUIDPartitionTable parses the GPT header at LBA 1 and the partition entry array at LBA 2.
+// NewGUIDPartitionTable parses the GPT header at LBA 1 and the partition entry array at its PartitionEntryLBA.
 // It reads from r only with ReadAt, so r is not required to keep a read offset.
 func NewGUIDPartitionTable(r io.ReaderAt) (*GUIDPartitionTable, error) {
 	gpt := GUIDPartitionTable{sectionReader: r}
@@ -250,9 +250,14 @@ func NewGUIDPartitionTable(r io.ReaderAt) (*GUIDPartitionTable, error) {
 	if size > maxPartitionEntryArraySize {
 		return nil, xerrors.Errorf("partition entry array too large: actual(%d byte), max(%d byte)", size, maxPartitionEntryArraySize)
 	}
-	// The partition entry array is read from LBA 2, rounded up to whole sectors.
-	array := make([]byte, (size+Sector-1)/Sector*Sector)
-	if err := readSector(r, array, 2*Sector); err != nil {
+	arrayLen := (size + Sector - 1) / Sector * Sector
+	// The array follows the header at LBA 1, and must end within int64 byte offsets.
+	lba := gpt.Header.PartitionEntryLBA
+	if lba < 2 || lba > (math.MaxInt64-arrayLen)/Sector {
+		return nil, xerrors.Errorf("invalid partition entry LBA: %d", lba)
+	}
+	array := make([]byte, arrayLen)
+	if err := readSector(r, array, int64(lba)*Sector); err != nil {
 		return nil, xerrors.Errorf("failed to read partition entry array: %w", err)
 	}
 	buf := bytes.NewReader(array)

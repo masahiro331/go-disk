@@ -420,3 +420,53 @@ func TestNewGUIDPartitionTable_EntryArraySize(t *testing.T) {
 		}
 	})
 }
+
+func TestNewGUIDPartitionTable_PartitionEntryLBA(t *testing.T) {
+	t.Run("array at LBA 3", func(t *testing.T) {
+		disk := newGPTDiskWithEntries([][2]uint64{{10, 17}})
+		copy(disk[3*Sector:4*Sector], disk[2*Sector:3*Sector])
+		copy(disk[2*Sector:3*Sector], make([]byte, Sector))
+		binary.LittleEndian.PutUint64(disk[Sector+72:], 3) // PartitionEntryLBA
+
+		g, err := NewGUIDPartitionTable(bytes.NewReader(disk))
+		if err != nil {
+			t.Fatalf("NewGUIDPartitionTable() unexpected error: %v", err)
+		}
+		if len(g.Entries) != 1 || g.Entries[0].StartingLBA != 10 || g.Entries[0].EndingLBA != 17 {
+			t.Errorf("Entries = %+v, want one entry at LBA 10-17", g.Entries)
+		}
+	})
+
+	// The entry array of newGPTDiskWithEntries is one sector (4 entries).
+	// 5 entries take 640 bytes, rounded up to a two-sector array.
+	maxLBA := uint64(math.MaxInt64-Sector) / Sector
+	maxLBA2 := uint64(math.MaxInt64-2*Sector) / Sector
+	tests := []struct {
+		name       string
+		lba        uint64
+		numEntries uint32
+		wantReads  int
+	}{
+		{name: "LBA 0", lba: 0, numEntries: 4, wantReads: 1},
+		{name: "LBA 1", lba: 1, numEntries: 4, wantReads: 1},
+		// Within int64, so the array is read and the read fails past the end of the disk.
+		{name: "end at the int64 limit", lba: maxLBA, numEntries: 4, wantReads: 2},
+		{name: "end past the int64 limit", lba: maxLBA + 1, numEntries: 4, wantReads: 1},
+		{name: "two-sector array end at the int64 limit", lba: maxLBA2, numEntries: 5, wantReads: 2},
+		{name: "two-sector array end past the int64 limit", lba: maxLBA2 + 1, numEntries: 5, wantReads: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			disk := newGPTDiskWithEntries(nil)
+			binary.LittleEndian.PutUint64(disk[Sector+72:], tt.lba)        // PartitionEntryLBA
+			binary.LittleEndian.PutUint32(disk[Sector+80:], tt.numEntries) // NumberOfPartitionEntries
+			r := &countingReaderAt{r: bytes.NewReader(disk)}
+			if _, err := NewGUIDPartitionTable(r); err == nil {
+				t.Fatal("NewGUIDPartitionTable() expected error, got nil")
+			}
+			if r.reads != tt.wantReads {
+				t.Errorf("ReadAt called %d times, want %d", r.reads, tt.wantReads)
+			}
+		})
+	}
+}
