@@ -187,7 +187,6 @@ type PartitionEntry struct {
 
 	index int
 
-	off           int64
 	sectionReader *io.SectionReader
 }
 
