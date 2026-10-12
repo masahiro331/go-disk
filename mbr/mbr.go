@@ -78,7 +78,6 @@ type Partition struct {
 	Size        uint32
 	index       int
 
-	off           int64
 	sectionReader *io.SectionReader
 }
 
