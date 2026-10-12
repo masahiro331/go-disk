@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"math"
 	"math/rand"
 	"sync"
 	"testing"
@@ -307,5 +308,74 @@ func verifyRandomPartitionReadAt(t *testing.T, p io.ReaderAt, want []byte, seed 
 			t.Errorf("ReadAt(len=%d, off=%d): content mismatch", len(b), off)
 			return
 		}
+	}
+}
+
+// newGPTDiskWithEntries builds a disk with a GPT header at LBA 1 and the given [StartingLBA, EndingLBA]
+// entries at LBA 2. The bytes after the entry array are a pattern of their absolute offset.
+func newGPTDiskWithEntries(entries [][2]uint64) []byte {
+	buf := make([]byte, 32*Sector)
+	for i := 3 * Sector; i < len(buf); i++ {
+		buf[i] = byte(i % 251)
+	}
+
+	header := buf[Sector : 2*Sector]
+	copy(header[0:8], Signature)
+	binary.LittleEndian.PutUint32(header[12:], 92)  // HeaderSize
+	binary.LittleEndian.PutUint64(header[72:], 2)   // PartitionEntryLBA
+	binary.LittleEndian.PutUint32(header[80:], 4)   // NumberOfPartitionEntries
+	binary.LittleEndian.PutUint32(header[84:], 128) // SizeOfPartitionEntry
+
+	array := buf[2*Sector : 3*Sector]
+	for i, lba := range entries {
+		e := array[i*PartitionEntrySize:]
+		e[0] = 0x01 // PartitionTypeGUID, non-zero to mark the entry as used
+		binary.LittleEndian.PutUint64(e[32:], lba[0])
+		binary.LittleEndian.PutUint64(e[40:], lba[1])
+	}
+	return buf
+}
+
+func TestPartitionEntry_InvalidRange(t *testing.T) {
+	// The largest EndingLBA whose end offset, (EndingLBA+1)*Sector, fits in int64.
+	const maxEndingLBA = math.MaxInt64/Sector - 1
+
+	tests := []struct {
+		name     string
+		lba      [2]uint64
+		wantSize uint64
+	}{
+		{name: "ending before starting", lba: [2]uint64{20, 12}, wantSize: 0},
+		{name: "ending at the int64 limit", lba: [2]uint64{maxEndingLBA, maxEndingLBA}, wantSize: 1},
+		{name: "ending past the int64 limit", lba: [2]uint64{maxEndingLBA, maxEndingLBA + 1}, wantSize: 0},
+		{name: "starting past the int64 limit", lba: [2]uint64{math.MaxUint64 - 1, math.MaxUint64}, wantSize: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// entry[0] is a valid partition, which must stay readable next to the invalid entry[1].
+			disk := newGPTDiskWithEntries([][2]uint64{{10, 17}, tt.lba})
+			g, err := NewGUIDPartitionTable(bytes.NewReader(disk))
+			if err != nil {
+				t.Fatalf("NewGUIDPartitionTable() unexpected error: %v", err)
+			}
+
+			valid, invalid := g.Entries[0], g.Entries[1]
+			if got := invalid.GetSize(); got != tt.wantSize {
+				t.Errorf("GetSize() = %d, want %d", got, tt.wantSize)
+			}
+			sr := invalid.GetSectionReader()
+			if got, want := sr.Size(), int64(tt.wantSize)*Sector; got != want {
+				t.Errorf("GetSectionReader().Size() = %d, want %d", got, want)
+			}
+			// Every case lies beyond the 32-sector disk or is empty.
+			if n, err := invalid.ReadAt(make([]byte, Sector), 0); n != 0 || err != io.EOF {
+				t.Errorf("ReadAt() = (%d, %v), want (0, io.EOF)", n, err)
+			}
+
+			b := make([]byte, 8*Sector)
+			if _, err := valid.ReadAt(b, 0); err != nil || !bytes.Equal(b, disk[10*Sector:18*Sector]) {
+				t.Errorf("valid entry ReadAt() = %v, or content mismatch", err)
+			}
+		})
 	}
 }
