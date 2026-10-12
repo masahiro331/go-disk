@@ -104,13 +104,13 @@ func TestNewDriver_PartitionTableType(t *testing.T) {
 		entryTypes [4]byte
 		withGPT    bool
 		wantGPT    bool
-		wantErr    bool
+		wantErr    string
 	}{
 		{name: "MBR with a zero signature", entryTypes: [4]byte{0x83}},
 		{name: "MBR with a signature", signature: 0x12345678, entryTypes: [4]byte{0x83}},
 		{name: "protective MBR with a zero signature", entryTypes: [4]byte{0xEE}, withGPT: true, wantGPT: true},
 		{name: "protective MBR with a signature", signature: 0x12345678, entryTypes: [4]byte{0xEE}, withGPT: true, wantGPT: true},
-		{name: "protective MBR without a GPT", signature: 0x12345678, entryTypes: [4]byte{0xEE}, wantErr: true},
+		{name: "protective MBR without a GPT", signature: 0x12345678, entryTypes: [4]byte{0xEE}, wantErr: "invalid GPT signature"},
 		{name: "hybrid MBR", entryTypes: [4]byte{0x83, 0, 0, 0xEE}, withGPT: true, wantGPT: true},
 		// Like the Arch and Alpine ISOs, which Linux reads as MBR.
 		{name: "GPT header without a protective entry", signature: 0x12345678, entryTypes: [4]byte{0, 0xEF}, withGPT: true},
@@ -118,9 +118,9 @@ func TestNewDriver_PartitionTableType(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d, err := disk.NewDriver(bytes.NewReader(newDisk(tt.signature, tt.entryTypes, tt.withGPT)))
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("NewDriver() = %T, want an error", d)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("NewDriver() = (%T, %v), want error containing %q", d, err, tt.wantErr)
 				}
 				return
 			}

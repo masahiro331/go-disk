@@ -236,6 +236,10 @@ func NewGUIDPartitionTable(r io.ReaderAt) (*GUIDPartitionTable, error) {
 		return nil, xerrors.Errorf("failed to binary read: %w", err)
 	}
 
+	if string(gpt.Header.Signature[:]) != Signature {
+		return nil, xerrors.Errorf("invalid GPT signature: actual(%s), expected(%s)", string(gpt.Header.Signature[:]), Signature)
+	}
+
 	if gpt.Header.SizeOfPartitionEntry != PartitionEntrySize {
 		return nil, xerrors.Errorf("not support GPT format error: actual(%d byte), expected(%d byte)", gpt.Header.SizeOfPartitionEntry, PartitionEntrySize)
 	}
@@ -244,10 +248,6 @@ func NewGUIDPartitionTable(r io.ReaderAt) (*GUIDPartitionTable, error) {
 	minHeaderSize := Sector - len(gpt.Header.ReservedPadding)
 	if int(gpt.Header.HeaderSize) < minHeaderSize || gpt.Header.HeaderSize > Sector {
 		return nil, xerrors.Errorf("invalid header size error: actual(%d), expected(%d-%d)", gpt.Header.HeaderSize, minHeaderSize, Sector)
-	}
-
-	if string(gpt.Header.Signature[:]) != Signature {
-		return nil, xerrors.Errorf("invalid GPT signature: actual(%s), expected(%s)", string(gpt.Header.Signature[:]), Signature)
 	}
 
 	size := uint64(gpt.Header.NumberOfPartitionEntries) * uint64(gpt.Header.SizeOfPartitionEntry)
