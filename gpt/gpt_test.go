@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -495,5 +496,13 @@ func TestNewGUIDPartitionTable_HeaderSize(t *testing.T) {
 				t.Errorf("Entries = %+v, want one entry at LBA 10-17", g.Entries)
 			}
 		})
+	}
+}
+
+func TestNewGUIDPartitionTable_NotGPT(t *testing.T) {
+	// LBA 1 is all zeros, so the signature check must fail before the size checks.
+	_, err := NewGUIDPartitionTable(bytes.NewReader(make([]byte, 4*Sector)))
+	if err == nil || !strings.Contains(err.Error(), "invalid GPT signature") {
+		t.Errorf("NewGUIDPartitionTable() error = %v, want an invalid GPT signature error", err)
 	}
 }
