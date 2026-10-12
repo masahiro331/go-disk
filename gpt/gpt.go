@@ -19,6 +19,9 @@ const (
 	Signature          = "EFI PART"
 	PartitionEntrySize = 128
 	BootTypeID         = "Hah!IdontNeedEFI"
+
+	// maxPartitionEntryArraySize is the largest entry array Linux accepts on x86_64 (KMALLOC_MAX_SIZE).
+	maxPartitionEntryArraySize = 4 << 20
 )
 
 const (
@@ -243,25 +246,16 @@ func NewGUIDPartitionTable(r io.ReaderAt) (*GUIDPartitionTable, error) {
 		return nil, xerrors.Errorf("invalid GPT signature: actual(%s), expected(%s)", string(gpt.Header.Signature[:]), Signature)
 	}
 
-	n := gpt.Header.NumberOfPartitionEntries * gpt.Header.SizeOfPartitionEntry / Sector
-	if gpt.Header.NumberOfPartitionEntries*gpt.Header.SizeOfPartitionEntry%Sector != 0 {
-		n += 1
+	size := uint64(gpt.Header.NumberOfPartitionEntries) * uint64(gpt.Header.SizeOfPartitionEntry)
+	if size > maxPartitionEntryArraySize {
+		return nil, xerrors.Errorf("partition entry array too large: actual(%d byte), max(%d byte)", size, maxPartitionEntryArraySize)
 	}
-	buf := bytes.NewBuffer(nil)
-	for i := 0; i < int(n); i++ {
-		b := make([]byte, Sector)
-		// The partition entry array is read from LBA 2.
-		if err := readSector(r, b, int64(i+2)*Sector); err != nil {
-			return nil, xerrors.Errorf("failed to read entries[%d]: %w", i, err)
-		}
-		n, err := buf.Write(b)
-		if err != nil {
-			return nil, xerrors.Errorf("failed to write buffer: %w", err)
-		}
-		if n != Sector {
-			return nil, xerrors.Errorf("invalid write size: actual(%d), expected(%d)", n, Sector)
-		}
+	// The partition entry array is read from LBA 2, rounded up to whole sectors.
+	array := make([]byte, (size+Sector-1)/Sector*Sector)
+	if err := readSector(r, array, 2*Sector); err != nil {
+		return nil, xerrors.Errorf("failed to read partition entry array: %w", err)
 	}
+	buf := bytes.NewReader(array)
 
 	for i := 0; i < int(gpt.Header.NumberOfPartitionEntries); i++ {
 		var partitionEntry PartitionEntry
