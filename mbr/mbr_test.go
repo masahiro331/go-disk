@@ -487,6 +487,60 @@ func TestMasterBootRecord_Next_ExtendedCircularReference(t *testing.T) {
 	}
 }
 
+func TestMasterBootRecord_Next_ExtendedSkippedEntries(t *testing.T) {
+	tests := []struct {
+		name       string
+		entry0Type byte
+		entry0Size uint32
+		entry1Type byte
+		entry1Size uint32
+		want       int // logical partitions
+	}{
+		{name: "valid logical and extended link", entry0Type: 0x83, entry0Size: 5, entry1Type: 0x05, entry1Size: 10, want: 2},
+		{name: "zero-sized entry 0", entry0Type: 0x83, entry0Size: 0, entry1Type: 0x05, entry1Size: 10, want: 1},
+		{name: "extended entry 0", entry0Type: 0x05, entry0Size: 5, entry1Type: 0x05, entry1Size: 10, want: 1},
+		{name: "zero-sized entry 0 without link", entry0Type: 0x83, entry0Size: 0, entry1Type: 0x00, entry1Size: 0, want: 0},
+		// Entry 1 always points to a valid EBR, so following a link that must be skipped adds a partition.
+		{name: "non-extended link", entry0Type: 0x83, entry0Size: 5, entry1Type: 0x83, entry1Size: 10, want: 1},
+		{name: "zero-sized link", entry0Type: 0x83, entry0Size: 5, entry1Type: 0x05, entry1Size: 0, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, 40*512)
+			writePartitionEntry(buf[446:], true, 0x83, 2, 4)
+			writePartitionEntry(buf[462:], false, 0x05, 10, 30)
+			binary.LittleEndian.PutUint16(buf[510:], 0xAA55)
+
+			ebr1 := 10 * 512
+			writePartitionEntry(buf[ebr1+446:], false, tt.entry0Type, 1, tt.entry0Size)
+			writePartitionEntry(buf[ebr1+462:], false, tt.entry1Type, 10, tt.entry1Size)
+			binary.LittleEndian.PutUint16(buf[ebr1+510:], 0xAA55)
+
+			ebr2 := 20 * 512
+			writePartitionEntry(buf[ebr2+446:], false, 0x83, 1, 5)
+			binary.LittleEndian.PutUint16(buf[ebr2+510:], 0xAA55)
+
+			sr := io.NewSectionReader(newReaderAt(buf), 0, int64(len(buf)))
+			m, err := mbr.NewMasterBootRecord(sr)
+			if err != nil {
+				t.Fatalf("NewMasterBootRecord() unexpected error: %v", err)
+			}
+			count := 0
+			for {
+				if _, err := m.Next(); err == io.EOF {
+					break
+				} else if err != nil {
+					t.Fatalf("Next() unexpected error: %v", err)
+				}
+				count++
+			}
+			if got := count - len(m.Partitions); got != tt.want {
+				t.Errorf("logical partitions = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func writePartitionEntry(dst []byte, boot bool, typeByte byte, startSector, size uint32) {
 	if boot {
 		dst[0] = 0x80

@@ -211,7 +211,7 @@ func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 		if len(logicals) > 0 {
 			mbr.logicalPartitions = append(mbr.logicalPartitions, logicals...)
 		} else {
-			// No valid EBR found; adjust partition to skip past the EBR area.
+			// No logical partition found; adjust partition to skip past the EBR area.
 			if mbr.Partitions[i].Size > 2 {
 				mbr.Partitions[i].StartSector += 2
 				mbr.Partitions[i].Size -= 2
@@ -295,15 +295,17 @@ func parseEBRChain(sr *io.SectionReader, extStartSector uint32) ([]Partition, er
 		}
 
 		// Entry 0: logical partition (StartSector relative to this EBR)
+		// Empty, zero-sized and extended entries are skipped as Linux does.
 		entry0 := parsePartitionEntry(buf[446:462])
-		if entry0.Type != 0 {
+		if entry0.Type != 0 && entry0.Size != 0 && !isExtended(entry0.Type) {
 			entry0.StartSector += ebrSector
 			partitions = append(partitions, entry0)
 		}
 
 		// Entry 1: next EBR pointer (StartSector relative to extended partition start)
+		// Linux follows the link only if it is non-empty and has an extended type.
 		entry1 := parsePartitionEntry(buf[462:478])
-		if entry1.Type == 0 || entry1.StartSector == 0 {
+		if !isExtended(entry1.Type) || entry1.Size == 0 || entry1.StartSector == 0 {
 			break
 		}
 		ebrSector = extStartSector + entry1.StartSector
