@@ -61,9 +61,8 @@ type MasterBootRecord struct {
 	Signature              uint16
 
 	logicalPartitions []Partition
-	currentIndex      int
-	currentPartition  *Partition
-	sectionReader     *io.SectionReader
+	nextIndex         int
+	sectionReader     io.ReaderAt
 }
 
 type CHS [3]byte
@@ -82,33 +81,28 @@ type Partition struct {
 	sectionReader *io.SectionReader
 }
 
+// Next returns the next partition.
+// Partitions returned by earlier calls remain readable, so they can be read concurrently.
 func (m *MasterBootRecord) Next() (types.Partition, error) {
-	if m.currentPartition != nil {
-		m.currentPartition.sectionReader = nil
-	}
-
 	total := len(m.Partitions) + len(m.logicalPartitions)
-	if m.currentIndex >= total {
+	if total <= m.nextIndex {
 		return nil, io.EOF
 	}
 
-	var p *Partition
-	if m.currentIndex < len(m.Partitions) {
-		p = &m.Partitions[m.currentIndex]
+	var partition *Partition
+	if m.nextIndex < len(m.Partitions) {
+		partition = &m.Partitions[m.nextIndex]
 	} else {
-		p = &m.logicalPartitions[m.currentIndex-len(m.Partitions)]
+		partition = &m.logicalPartitions[m.nextIndex-len(m.Partitions)]
 	}
-	m.currentIndex++
-
-	offset := int64(p.GetStartSector()) * 512
-	_, err := m.sectionReader.Seek(offset, 0)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to seek partition(%d): %w", p.Index(), err)
+	m.nextIndex++
+	if partition.sectionReader == nil {
+		// Partitions built by NewMasterBootRecord already have a reader.
+		// This covers records constructed without it.
+		partition.sectionReader = partition.newSectionReader(m.sectionReader)
 	}
-	p.sectionReader = io.NewSectionReader(m.sectionReader, offset, int64(p.GetSize()*512))
 
-	m.currentPartition = p
-	return p, nil
+	return partition, nil
 }
 
 func (p Partition) Index() int {
@@ -137,18 +131,32 @@ func (p Partition) GetSize() uint64 {
 	return uint64(p.Size)
 }
 
+// ReadAt reads from the partition. Reads are bounded to the partition range.
+// It is safe for concurrent use if the underlying disk reader is.
+func (p Partition) ReadAt(b []byte, off int64) (int, error) {
+	return p.sectionReader.ReadAt(b, off)
+}
+
+// GetSectionReader returns a new SectionReader over the partition.
+// Each call returns an independent reader with its own read offset.
 func (p Partition) GetSectionReader() io.SectionReader {
 	return *p.sectionReader
 }
 
-func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
+func (p Partition) newSectionReader(r io.ReaderAt) *io.SectionReader {
+	return io.NewSectionReader(r, int64(p.GetStartSector())*Sector, int64(p.GetSize()*Sector))
+}
+
+// NewMasterBootRecord parses the master boot record in the first sector of sr.
+// It reads from sr only with ReadAt, so sr is not required to keep a read offset.
+func NewMasterBootRecord(sr io.ReaderAt) (*MasterBootRecord, error) {
 	buf := make([]byte, Sector)
-	size, err := sr.Read(buf)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to read mbr error: %w", err)
-	}
+	size, err := sr.ReadAt(buf, 0)
 	if size != Sector {
-		return nil, xerrors.Errorf("binary size error: actual(%d), expected(%d)", Sector, size)
+		if err == nil {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, xerrors.Errorf("failed to read mbr error: %w", err)
 	}
 
 	r := bytes.NewReader(buf)
@@ -230,6 +238,14 @@ func NewMasterBootRecord(sr *io.SectionReader) (*MasterBootRecord, error) {
 		return nil, EmptyPartitionTable
 	}
 
+	// Set readers after the extended partition adjustment above.
+	for i := range mbr.Partitions {
+		mbr.Partitions[i].sectionReader = mbr.Partitions[i].newSectionReader(sr)
+	}
+	for i := range mbr.logicalPartitions {
+		mbr.logicalPartitions[i].sectionReader = mbr.logicalPartitions[i].newSectionReader(sr)
+	}
+
 	return &mbr, nil
 }
 
@@ -264,11 +280,11 @@ func parsePartitionEntry(buf []byte) Partition {
 //   - Entry 0: logical partition (StartSector relative to this EBR)
 //   - Entry 1: next EBR pointer (StartSector relative to extStartSector)
 //
-// I/O failures (seek/read/short read) are returned as errors so the
+// I/O failures (read/short read) are returned as errors so the
 // caller can distinguish a malformed/truncated image from a legitimate
 // "no EBR" case (signature mismatch), which terminates the chain
 // without an error and lets the caller apply a fallback.
-func parseEBRChain(sr *io.SectionReader, extStartSector uint32) ([]Partition, error) {
+func parseEBRChain(sr io.ReaderAt, extStartSector uint32) ([]Partition, error) {
 	var partitions []Partition
 	ebrSector := extStartSector
 	visited := make(map[uint32]bool)
@@ -281,11 +297,10 @@ func parseEBRChain(sr *io.SectionReader, extStartSector uint32) ([]Partition, er
 		visited[ebrSector] = true
 
 		ebrOffset := int64(ebrSector) * Sector
-		if _, err := sr.Seek(ebrOffset, 0); err != nil {
-			return nil, xerrors.Errorf("failed to seek EBR at sector %d: %w", ebrSector, err)
-		}
-
-		if _, err := io.ReadFull(sr, buf); err != nil {
+		if n, err := sr.ReadAt(buf, ebrOffset); n != Sector {
+			if err == nil || err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
 			return nil, xerrors.Errorf("failed to read EBR at sector %d: %w", ebrSector, err)
 		}
 

@@ -73,29 +73,25 @@ type GUIDPartitionTable struct {
 	Entries []PartitionEntry
 
 	nextIndex     int
-	currentEntry  *PartitionEntry
-	sectionReader *io.SectionReader
+	sectionReader io.ReaderAt
 }
 
+// Next returns the next used partition entry.
+// Partitions returned by earlier calls remain readable, so they can be read concurrently.
 func (gpt *GUIDPartitionTable) Next() (types.Partition, error) {
-	if gpt.currentEntry != nil {
-		// initialize current partition readseeker  // TODO: use mutex
-		gpt.currentEntry.sectionReader = nil
-	}
 	if gpt.nextIndex >= len(gpt.Entries) {
 		return nil, io.EOF
 	}
 
-	gpt.currentEntry = &gpt.Entries[gpt.nextIndex]
+	entry := &gpt.Entries[gpt.nextIndex]
 	gpt.nextIndex++
-	offset := int64(gpt.currentEntry.GetStartSector()) * 512
-	_, err := gpt.sectionReader.Seek(offset, 0)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to seek entry(%d): %w", gpt.currentEntry.Index(), err)
+	if entry.sectionReader == nil {
+		// Entries built by NewGUIDPartitionTable already have a reader.
+		// This covers tables constructed without it.
+		entry.sectionReader = entry.newSectionReader(gpt.sectionReader)
 	}
-	gpt.currentEntry.sectionReader = io.NewSectionReader(gpt.sectionReader, offset, int64(gpt.currentEntry.GetSize()*512))
 
-	return gpt.currentEntry, nil
+	return entry, nil
 }
 
 func (pe PartitionEntry) Name() string {
@@ -147,8 +143,20 @@ func (pe PartitionEntry) Bootable() bool {
 		guid == GrubBIOSBoot
 }
 
+// ReadAt reads from the partition. Reads are bounded to the partition range.
+// It is safe for concurrent use if the underlying disk reader is.
+func (pe PartitionEntry) ReadAt(p []byte, off int64) (int, error) {
+	return pe.sectionReader.ReadAt(p, off)
+}
+
+// GetSectionReader returns a new SectionReader over the partition.
+// Each call returns an independent reader with its own read offset.
 func (pe PartitionEntry) GetSectionReader() io.SectionReader {
 	return *pe.sectionReader
+}
+
+func (pe PartitionEntry) newSectionReader(r io.ReaderAt) *io.SectionReader {
+	return io.NewSectionReader(r, int64(pe.GetStartSector())*Sector, int64(pe.GetSize()*Sector))
 }
 
 type Header struct {
@@ -207,9 +215,15 @@ func (g *PartitionEntry) isUsed() bool {
 	return false
 }
 
-func NewGUIDPartitionTable(sr *io.SectionReader) (*GUIDPartitionTable, error) {
-	gpt := GUIDPartitionTable{sectionReader: sr}
-	if err := binary.Read(sr, binary.LittleEndian, &gpt.Header); err != nil {
+// NewGUIDPartitionTable parses the GPT header at LBA 1 and the partition entry array at LBA 2.
+// It reads from r only with ReadAt, so r is not required to keep a read offset.
+func NewGUIDPartitionTable(r io.ReaderAt) (*GUIDPartitionTable, error) {
+	gpt := GUIDPartitionTable{sectionReader: r}
+	header := make([]byte, Sector)
+	if err := readSector(r, header, Sector); err != nil {
+		return nil, xerrors.Errorf("failed to read header: %w", err)
+	}
+	if err := binary.Read(bytes.NewReader(header), binary.LittleEndian, &gpt.Header); err != nil {
 		return nil, xerrors.Errorf("failed to binary read: %w", err)
 	}
 
@@ -232,14 +246,11 @@ func NewGUIDPartitionTable(sr *io.SectionReader) (*GUIDPartitionTable, error) {
 	buf := bytes.NewBuffer(nil)
 	for i := 0; i < int(n); i++ {
 		b := make([]byte, Sector)
-		n, err := sr.Read(b)
-		if err != nil {
+		// The partition entry array is read from LBA 2.
+		if err := readSector(r, b, int64(i+2)*Sector); err != nil {
 			return nil, xerrors.Errorf("failed to read entries[%d]: %w", i, err)
 		}
-		if n != Sector {
-			return nil, xerrors.Errorf("invalid read size: actual(%d), expected(%d)", n, Sector)
-		}
-		n, err = buf.Write(b)
+		n, err := buf.Write(b)
 		if err != nil {
 			return nil, xerrors.Errorf("failed to write buffer: %w", err)
 		}
@@ -271,6 +282,7 @@ func NewGUIDPartitionTable(sr *io.SectionReader) (*GUIDPartitionTable, error) {
 		partitionEntry.index = i
 
 		if partitionEntry.isUsed() {
+			partitionEntry.sectionReader = partitionEntry.newSectionReader(r)
 			gpt.Entries = append(gpt.Entries, partitionEntry)
 		}
 	}
@@ -280,4 +292,16 @@ func NewGUIDPartitionTable(sr *io.SectionReader) (*GUIDPartitionTable, error) {
 
 func (pe PartitionEntry) IsSupported() bool {
 	return true
+}
+
+// readSector reads len(b) bytes at off. A full read that also reports io.EOF is treated as success.
+func readSector(r io.ReaderAt, b []byte, off int64) error {
+	n, err := r.ReadAt(b, off)
+	if n == len(b) {
+		return nil
+	}
+	if err == nil {
+		err = io.ErrUnexpectedEOF
+	}
+	return xerrors.Errorf("invalid read size: actual(%d), expected(%d): %w", n, len(b), err)
 }
