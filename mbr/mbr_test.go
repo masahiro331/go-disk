@@ -455,6 +455,22 @@ func TestMasterBootRecord_Next_ExtendedInvalidEBR(t *testing.T) {
 	}
 }
 
+func TestNewMasterBootRecord_ExtendedTruncatedEBR(t *testing.T) {
+	// Extended partition points past the end of the disk, so reading the EBR
+	// is a short read and must be reported as an error.
+	diskSize := 30 * 512
+	buf := make([]byte, diskSize)
+
+	writePartitionEntry(buf[446:], true, 0x83, 2, 4)    // partition 0: primary
+	writePartitionEntry(buf[462:], false, 0x05, 40, 20) // partition 1: extended beyond disk end
+	binary.LittleEndian.PutUint16(buf[510:], 0xAA55)
+
+	sr := io.NewSectionReader(newReaderAt(buf), 0, int64(len(buf)))
+	if _, err := mbr.NewMasterBootRecord(sr); err == nil {
+		t.Fatal("NewMasterBootRecord() expected error for truncated EBR, got nil")
+	}
+}
+
 func TestMasterBootRecord_Next_ExtendedCircularReference(t *testing.T) {
 	// EBR chain with circular reference: EBR 1 points to itself.
 	diskSize := 30 * 512
@@ -682,6 +698,81 @@ func TestPartition_ReadAtBounds(t *testing.T) {
 			}
 		})
 	}
+}
+
+// newPatternedExtendedMBRDisk builds a disk with an EBR chain whose bytes outside the MBR and EBRs
+// are a pattern of their absolute offset, so a read from the wrong position is detected.
+//
+// Partition layout:
+//
+//	[0] primary  StartSector=2,  Size=4
+//	[1] extended StartSector=10, Size=40
+//	    EBR at 10: logical StartSector=11, Size=5, next EBR at 20
+//	    EBR at 20: logical StartSector=21, Size=5
+func newPatternedExtendedMBRDisk() []byte {
+	buf := make([]byte, 50*mbr.Sector)
+	for i := mbr.Sector; i < len(buf); i++ {
+		buf[i] = byte(i % 251)
+	}
+	writePartitionEntry(buf[446:], true, 0x83, 2, 4)
+	writePartitionEntry(buf[462:], false, 0x05, 10, 40)
+	binary.LittleEndian.PutUint16(buf[510:], 0xAA55)
+
+	ebr1 := buf[10*mbr.Sector : 11*mbr.Sector]
+	copy(ebr1, make([]byte, mbr.Sector))
+	writePartitionEntry(ebr1[446:], false, 0x83, 1, 5)
+	writePartitionEntry(ebr1[462:], false, 0x05, 10, 16)
+	binary.LittleEndian.PutUint16(ebr1[510:], 0xAA55)
+
+	ebr2 := buf[20*mbr.Sector : 21*mbr.Sector]
+	copy(ebr2, make([]byte, mbr.Sector))
+	writePartitionEntry(ebr2[446:], false, 0x83, 1, 5)
+	binary.LittleEndian.PutUint16(ebr2[510:], 0xAA55)
+	return buf
+}
+
+func TestPartition_ConcurrentReadAt_Logical(t *testing.T) {
+	disk := newPatternedExtendedMBRDisk()
+	m, err := mbr.NewMasterBootRecord(newReaderAt(disk))
+	if err != nil {
+		t.Fatalf("NewMasterBootRecord() unexpected error: %v", err)
+	}
+
+	// Iterate to the end first, so that every partition is read after Next() has moved past it.
+	var partitions []types.Partition
+	for {
+		p, err := m.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() unexpected error: %v", err)
+		}
+		if t := p.GetType()[0]; p.GetSize() > 0 && t != 0x05 && t != 0x0f && t != 0x85 {
+			partitions = append(partitions, p)
+		}
+	}
+	var starts []uint64
+	for _, p := range partitions {
+		starts = append(starts, p.GetStartSector())
+	}
+	if want := []uint64{2, 11, 21}; !reflect.DeepEqual(starts, want) {
+		t.Fatalf("start sectors = %v, want %v", starts, want)
+	}
+
+	var wg sync.WaitGroup
+	for _, p := range partitions {
+		start := int64(p.GetStartSector()) * mbr.Sector
+		want := disk[start : start+int64(p.GetSize())*mbr.Sector]
+		for g := 0; g < 8; g++ {
+			wg.Add(1)
+			go func(p types.Partition, seed int64) {
+				defer wg.Done()
+				verifyRandomReadAt(t, p, want, seed)
+			}(p, int64(g))
+		}
+	}
+	wg.Wait()
 }
 
 // verifyRandomReadAt reads p at random offsets, including reads across its end, and compares with want.
