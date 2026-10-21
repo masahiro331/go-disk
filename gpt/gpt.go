@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -14,10 +15,15 @@ import (
 )
 
 const (
-	Sector             = 0x200
-	Signature          = "EFI PART"
+	// Sector is the logical block size. Disks with 4096-byte logical blocks (4Kn) are not supported.
+	Sector    = 0x200
+	Signature = "EFI PART"
+	// PartitionEntrySize is the only entry size accepted. The UEFI spec allows 128 * 2^n, but Linux also accepts only 128.
 	PartitionEntrySize = 128
 	BootTypeID         = "Hah!IdontNeedEFI"
+
+	// maxPartitionEntryArraySize is the largest entry array Linux accepts on x86_64 (KMALLOC_MAX_SIZE).
+	maxPartitionEntryArraySize = 4 << 20
 )
 
 const (
@@ -128,7 +134,11 @@ func (pe PartitionEntry) GetStartSector() uint64 {
 	return pe.StartingLBA
 }
 
+// GetSize returns the size in sectors, or 0 if the entry's range is invalid.
 func (pe PartitionEntry) GetSize() uint64 {
+	if pe.EndingLBA < pe.StartingLBA || pe.EndingLBA >= math.MaxInt64/Sector {
+		return 0
+	}
 	return pe.EndingLBA - pe.StartingLBA + 1
 }
 
@@ -187,7 +197,6 @@ type PartitionEntry struct {
 
 	index int
 
-	off           int64
 	sectionReader *io.SectionReader
 }
 
@@ -215,7 +224,7 @@ func (g *PartitionEntry) isUsed() bool {
 	return false
 }
 
-// NewGUIDPartitionTable parses the GPT header at LBA 1 and the partition entry array at LBA 2.
+// NewGUIDPartitionTable parses the GPT header at LBA 1 and the partition entry array at its PartitionEntryLBA.
 // It reads from r only with ReadAt, so r is not required to keep a read offset.
 func NewGUIDPartitionTable(r io.ReaderAt) (*GUIDPartitionTable, error) {
 	gpt := GUIDPartitionTable{sectionReader: r}
@@ -227,37 +236,35 @@ func NewGUIDPartitionTable(r io.ReaderAt) (*GUIDPartitionTable, error) {
 		return nil, xerrors.Errorf("failed to binary read: %w", err)
 	}
 
-	if gpt.Header.SizeOfPartitionEntry != PartitionEntrySize {
-		return nil, xerrors.Errorf("not support GPT format error: actual(%d byte), expected(%d byte)", gpt.Header.SizeOfPartitionEntry, PartitionEntrySize)
-	}
-
-	if Sector-len(gpt.Header.ReservedPadding) != int(gpt.Header.HeaderSize) {
-		return nil, xerrors.Errorf("invalid header size error: actual(%d), expected(%d)", Sector-len(gpt.Header.ReservedPadding), gpt.Header.HeaderSize)
-	}
-
 	if string(gpt.Header.Signature[:]) != Signature {
 		return nil, xerrors.Errorf("invalid GPT signature: actual(%s), expected(%s)", string(gpt.Header.Signature[:]), Signature)
 	}
 
-	n := gpt.Header.NumberOfPartitionEntries * gpt.Header.SizeOfPartitionEntry / Sector
-	if gpt.Header.NumberOfPartitionEntries*gpt.Header.SizeOfPartitionEntry%Sector != 0 {
-		n += 1
+	if gpt.Header.SizeOfPartitionEntry != PartitionEntrySize {
+		return nil, xerrors.Errorf("not support GPT format error: actual(%d byte), expected(%d byte)", gpt.Header.SizeOfPartitionEntry, PartitionEntrySize)
 	}
-	buf := bytes.NewBuffer(nil)
-	for i := 0; i < int(n); i++ {
-		b := make([]byte, Sector)
-		// The partition entry array is read from LBA 2.
-		if err := readSector(r, b, int64(i+2)*Sector); err != nil {
-			return nil, xerrors.Errorf("failed to read entries[%d]: %w", i, err)
-		}
-		n, err := buf.Write(b)
-		if err != nil {
-			return nil, xerrors.Errorf("failed to write buffer: %w", err)
-		}
-		if n != Sector {
-			return nil, xerrors.Errorf("invalid write size: actual(%d), expected(%d)", n, Sector)
-		}
+
+	// Bytes past the defined fields are reserved, so a larger header up to a sector is valid.
+	minHeaderSize := Sector - len(gpt.Header.ReservedPadding)
+	if int(gpt.Header.HeaderSize) < minHeaderSize || gpt.Header.HeaderSize > Sector {
+		return nil, xerrors.Errorf("invalid header size error: actual(%d), expected(%d-%d)", gpt.Header.HeaderSize, minHeaderSize, Sector)
 	}
+
+	size := uint64(gpt.Header.NumberOfPartitionEntries) * uint64(gpt.Header.SizeOfPartitionEntry)
+	if size > maxPartitionEntryArraySize {
+		return nil, xerrors.Errorf("partition entry array too large: actual(%d byte), max(%d byte)", size, maxPartitionEntryArraySize)
+	}
+	arrayLen := (size + Sector - 1) / Sector * Sector
+	// The array follows the header at LBA 1, and must end within int64 byte offsets.
+	lba := gpt.Header.PartitionEntryLBA
+	if lba < 2 || lba > (math.MaxInt64-arrayLen)/Sector {
+		return nil, xerrors.Errorf("invalid partition entry LBA: %d", lba)
+	}
+	array := make([]byte, arrayLen)
+	if err := readSector(r, array, int64(lba)*Sector); err != nil {
+		return nil, xerrors.Errorf("failed to read partition entry array: %w", err)
+	}
+	buf := bytes.NewReader(array)
 
 	for i := 0; i < int(gpt.Header.NumberOfPartitionEntries); i++ {
 		var partitionEntry PartitionEntry

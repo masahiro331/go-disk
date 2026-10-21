@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"math"
 	"math/rand"
 	"os"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -453,6 +455,22 @@ func TestMasterBootRecord_Next_ExtendedInvalidEBR(t *testing.T) {
 	}
 }
 
+func TestNewMasterBootRecord_ExtendedTruncatedEBR(t *testing.T) {
+	// Extended partition points past the end of the disk, so reading the EBR
+	// is a short read and must be reported as an error.
+	diskSize := 30 * 512
+	buf := make([]byte, diskSize)
+
+	writePartitionEntry(buf[446:], true, 0x83, 2, 4)    // partition 0: primary
+	writePartitionEntry(buf[462:], false, 0x05, 40, 20) // partition 1: extended beyond disk end
+	binary.LittleEndian.PutUint16(buf[510:], 0xAA55)
+
+	sr := io.NewSectionReader(newReaderAt(buf), 0, int64(len(buf)))
+	if _, err := mbr.NewMasterBootRecord(sr); err == nil {
+		t.Fatal("NewMasterBootRecord() expected error for truncated EBR, got nil")
+	}
+}
+
 func TestMasterBootRecord_Next_ExtendedCircularReference(t *testing.T) {
 	// EBR chain with circular reference: EBR 1 points to itself.
 	diskSize := 30 * 512
@@ -682,6 +700,81 @@ func TestPartition_ReadAtBounds(t *testing.T) {
 	}
 }
 
+// newPatternedExtendedMBRDisk builds a disk with an EBR chain whose bytes outside the MBR and EBRs
+// are a pattern of their absolute offset, so a read from the wrong position is detected.
+//
+// Partition layout:
+//
+//	[0] primary  StartSector=2,  Size=4
+//	[1] extended StartSector=10, Size=40
+//	    EBR at 10: logical StartSector=11, Size=5, next EBR at 20
+//	    EBR at 20: logical StartSector=21, Size=5
+func newPatternedExtendedMBRDisk() []byte {
+	buf := make([]byte, 50*mbr.Sector)
+	for i := mbr.Sector; i < len(buf); i++ {
+		buf[i] = byte(i % 251)
+	}
+	writePartitionEntry(buf[446:], true, 0x83, 2, 4)
+	writePartitionEntry(buf[462:], false, 0x05, 10, 40)
+	binary.LittleEndian.PutUint16(buf[510:], 0xAA55)
+
+	ebr1 := buf[10*mbr.Sector : 11*mbr.Sector]
+	copy(ebr1, make([]byte, mbr.Sector))
+	writePartitionEntry(ebr1[446:], false, 0x83, 1, 5)
+	writePartitionEntry(ebr1[462:], false, 0x05, 10, 16)
+	binary.LittleEndian.PutUint16(ebr1[510:], 0xAA55)
+
+	ebr2 := buf[20*mbr.Sector : 21*mbr.Sector]
+	copy(ebr2, make([]byte, mbr.Sector))
+	writePartitionEntry(ebr2[446:], false, 0x83, 1, 5)
+	binary.LittleEndian.PutUint16(ebr2[510:], 0xAA55)
+	return buf
+}
+
+func TestPartition_ConcurrentReadAt_Logical(t *testing.T) {
+	disk := newPatternedExtendedMBRDisk()
+	m, err := mbr.NewMasterBootRecord(newReaderAt(disk))
+	if err != nil {
+		t.Fatalf("NewMasterBootRecord() unexpected error: %v", err)
+	}
+
+	// Iterate to the end first, so that every partition is read after Next() has moved past it.
+	var partitions []types.Partition
+	for {
+		p, err := m.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() unexpected error: %v", err)
+		}
+		if t := p.GetType()[0]; p.GetSize() > 0 && t != 0x05 && t != 0x0f && t != 0x85 {
+			partitions = append(partitions, p)
+		}
+	}
+	var starts []uint64
+	for _, p := range partitions {
+		starts = append(starts, p.GetStartSector())
+	}
+	if want := []uint64{2, 11, 21}; !reflect.DeepEqual(starts, want) {
+		t.Fatalf("start sectors = %v, want %v", starts, want)
+	}
+
+	var wg sync.WaitGroup
+	for _, p := range partitions {
+		start := int64(p.GetStartSector()) * mbr.Sector
+		want := disk[start : start+int64(p.GetSize())*mbr.Sector]
+		for g := 0; g < 8; g++ {
+			wg.Add(1)
+			go func(p types.Partition, seed int64) {
+				defer wg.Done()
+				verifyRandomReadAt(t, p, want, seed)
+			}(p, int64(g))
+		}
+	}
+	wg.Wait()
+}
+
 // verifyRandomReadAt reads p at random offsets, including reads across its end, and compares with want.
 func verifyRandomReadAt(t *testing.T, p io.ReaderAt, want []byte, seed int64) {
 	t.Helper()
@@ -710,5 +803,166 @@ func verifyRandomReadAt(t *testing.T, p io.ReaderAt, want []byte, seed int64) {
 			t.Errorf("ReadAt(len=%d, off=%d): content mismatch", len(b), off)
 			return
 		}
+	}
+}
+
+// sparseDisk is a disk of a given size that reads as zeros except for the sectors set in it,
+// so that partition tables near the uint32 sector limit can be tested without a 2 TiB buffer.
+type sparseDisk struct {
+	size    int64
+	sectors map[int64][]byte
+}
+
+func newSparseDisk() *sparseDisk {
+	return &sparseDisk{size: (math.MaxUint32 + 1) * mbr.Sector, sectors: map[int64][]byte{}}
+}
+
+func (d *sparseDisk) sector(s int64) []byte {
+	if d.sectors[s] == nil {
+		d.sectors[s] = make([]byte, mbr.Sector)
+	}
+	return d.sectors[s]
+}
+
+func (d *sparseDisk) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 || off >= d.size {
+		return 0, io.EOF
+	}
+	n := len(p)
+	if rest := d.size - off; int64(n) > rest {
+		n = int(rest)
+	}
+	for i := 0; i < n; {
+		pos := off + int64(i)
+		inSector := int(pos % mbr.Sector)
+		s := d.sectors[pos/mbr.Sector]
+		if s == nil {
+			s = make([]byte, mbr.Sector)
+		}
+		i += copy(p[i:n], s[inSector:])
+	}
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+type partitionRange struct {
+	start uint64
+	size  uint64
+}
+
+func readRanges(t *testing.T, d *sparseDisk) []partitionRange {
+	t.Helper()
+	m, err := mbr.NewMasterBootRecord(d)
+	if err != nil {
+		t.Fatalf("NewMasterBootRecord() unexpected error: %v", err)
+	}
+	var got []partitionRange
+	for {
+		p, err := m.Next()
+		if err == io.EOF {
+			return got
+		}
+		if err != nil {
+			t.Fatalf("Next() unexpected error: %v", err)
+		}
+		got = append(got, partitionRange{p.GetStartSector(), p.GetSize()})
+	}
+}
+
+func TestNewMasterBootRecord_ExtendedFallbackOverflow(t *testing.T) {
+	tests := []struct {
+		name  string
+		start uint32
+		size  uint32
+		want  partitionRange
+	}{
+		{name: "size 0", start: 10, size: 0, want: partitionRange{10, 0}},
+		{name: "size 1", start: 10, size: 1, want: partitionRange{10, 0}},
+		{name: "size 2", start: 10, size: 2, want: partitionRange{10, 0}},
+		{name: "size 3", start: 10, size: 3, want: partitionRange{12, 1}},
+		{name: "start + 2 at the limit", start: math.MaxUint32 - 2, size: 3, want: partitionRange{math.MaxUint32, 1}},
+		{name: "start + 2 overflows", start: math.MaxUint32 - 1, size: 3, want: partitionRange{math.MaxUint32 - 1, 0}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The extended partition has no EBR signature, so the fallback adjustment applies.
+			d := newSparseDisk()
+			m := d.sector(0)
+			writePartitionEntry(m[446:], true, 0x83, 2, 4)
+			writePartitionEntry(m[462:], false, 0x05, tt.start, tt.size)
+			binary.LittleEndian.PutUint16(m[510:], 0xAA55)
+
+			got := readRanges(t, d)
+			if len(got) != 4 {
+				t.Fatalf("got %d partitions, want 4: %v", len(got), got)
+			}
+			if got[1] != tt.want {
+				t.Errorf("extended partition = %+v, want %+v", got[1], tt.want)
+			}
+		})
+	}
+}
+
+func TestNewMasterBootRecord_EBRChainOverflow(t *testing.T) {
+	const extStart = 10
+	tests := []struct {
+		name string
+		// entry0Start and entry1Start are the relative start sectors in the EBR at extStart.
+		entry0Start uint32
+		entry1Start uint32
+		want        []partitionRange
+	}{
+		{
+			name:        "logical start at the limit",
+			entry0Start: math.MaxUint32 - extStart,
+			want:        []partitionRange{{math.MaxUint32, 5}},
+		},
+		{
+			// The logical partition is skipped because its start sector cannot be represented.
+			name:        "logical start overflows",
+			entry0Start: math.MaxUint32 - extStart + 1,
+			want:        []partitionRange{},
+		},
+		{
+			// The next EBR at the last sector has no signature, so the chain ends there.
+			name:        "next EBR at the limit",
+			entry0Start: 1,
+			entry1Start: math.MaxUint32 - extStart,
+			want:        []partitionRange{{extStart + 1, 5}},
+		},
+		{
+			// Without the check, the next EBR would wrap around to sector 0 and the MBR would be read as an EBR.
+			name:        "next EBR overflows",
+			entry0Start: 1,
+			entry1Start: math.MaxUint32 - extStart + 1,
+			want:        []partitionRange{{extStart + 1, 5}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := newSparseDisk()
+			m := d.sector(0)
+			writePartitionEntry(m[446:], true, 0x83, 2, 4)
+			writePartitionEntry(m[462:], false, 0x05, extStart, 40)
+			binary.LittleEndian.PutUint16(m[510:], 0xAA55)
+
+			ebr := d.sector(extStart)
+			writePartitionEntry(ebr[446:], false, 0x83, tt.entry0Start, 5)
+			if tt.entry1Start != 0 {
+				writePartitionEntry(ebr[462:], false, 0x05, tt.entry1Start, 5)
+			}
+			binary.LittleEndian.PutUint16(ebr[510:], 0xAA55)
+
+			got := readRanges(t, d)
+			if len(got) < 4 {
+				t.Fatalf("got %d partitions, want at least 4: %v", len(got), got)
+			}
+			// The first 4 are the primary entries; the rest are logical partitions.
+			if logicals := got[4:]; !reflect.DeepEqual(logicals, tt.want) {
+				t.Errorf("logical partitions = %+v, want %+v", logicals, tt.want)
+			}
+		})
 	}
 }

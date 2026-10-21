@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"math"
 	"strconv"
 
 	"github.com/masahiro331/go-disk/types"
@@ -11,7 +12,8 @@ import (
 )
 
 const (
-	SIGNATURE        = 0xAA55
+	SIGNATURE = 0xAA55
+	// Sector is the logical block size. Disks with 4096-byte logical blocks (4Kn) are not supported.
 	Sector           = 512
 	maxEBRChainDepth = 256
 )
@@ -77,7 +79,6 @@ type Partition struct {
 	Size        uint32
 	index       int
 
-	off           int64
 	sectionReader *io.SectionReader
 }
 
@@ -220,7 +221,7 @@ func NewMasterBootRecord(sr io.ReaderAt) (*MasterBootRecord, error) {
 			mbr.logicalPartitions = append(mbr.logicalPartitions, logicals...)
 		} else {
 			// No logical partition found; adjust partition to skip past the EBR area.
-			if mbr.Partitions[i].Size > 2 {
+			if mbr.Partitions[i].Size > 2 && mbr.Partitions[i].StartSector <= math.MaxUint32-2 {
 				mbr.Partitions[i].StartSector += 2
 				mbr.Partitions[i].Size -= 2
 			} else {
@@ -311,8 +312,9 @@ func parseEBRChain(sr io.ReaderAt, extStartSector uint32) ([]Partition, error) {
 
 		// Entry 0: logical partition (StartSector relative to this EBR)
 		// Empty, zero-sized and extended entries are skipped as Linux does.
+		// A start sector that overflows uint32 cannot be represented, so the partition is skipped.
 		entry0 := parsePartitionEntry(buf[446:462])
-		if entry0.Type != 0 && entry0.Size != 0 && !isExtended(entry0.Type) {
+		if entry0.Type != 0 && entry0.Size != 0 && !isExtended(entry0.Type) && entry0.StartSector <= math.MaxUint32-ebrSector {
 			entry0.StartSector += ebrSector
 			partitions = append(partitions, entry0)
 		}
@@ -320,7 +322,7 @@ func parseEBRChain(sr io.ReaderAt, extStartSector uint32) ([]Partition, error) {
 		// Entry 1: next EBR pointer (StartSector relative to extended partition start)
 		// Linux follows the link only if it is non-empty and has an extended type.
 		entry1 := parsePartitionEntry(buf[462:478])
-		if !isExtended(entry1.Type) || entry1.Size == 0 || entry1.StartSector == 0 {
+		if !isExtended(entry1.Type) || entry1.Size == 0 || entry1.StartSector == 0 || entry1.StartSector > math.MaxUint32-extStartSector {
 			break
 		}
 		ebrSector = extStartSector + entry1.StartSector
